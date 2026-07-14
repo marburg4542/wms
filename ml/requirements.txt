@@ -1,0 +1,3 @@
+# Online / incremental learning — River ออกแบบมาเพื่อ streaming ML โดยเฉพาะ (learn_one/predict_one)
+river>=0.21
+# ที่เหลือ (sqlite3, json, pickle, datetime, statistics) เป็น standard library ของ Python ไม่ต้องติดตั้ง
