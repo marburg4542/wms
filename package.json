@@ -36,5 +36,9 @@
     "globals": "^16.0.0",
     "tailwindcss": "^4.1.11",
     "vite": "^6.3.5"
+  },
+  "allowScripts": {
+    "core-js@3.49.0": true,
+    "esbuild@0.25.5": true
   }
 }
