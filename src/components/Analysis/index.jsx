@@ -20,33 +20,56 @@ function StatCard({ label, value, sub, accent = 'text-primary' }) {
   );
 }
 
-// กราฟแท่งเทียบ นำเข้า (เขียว) vs เบิกออก (ฟ้า) ต่อช่วงเวลา — ใช้ CSS ล้วน ไม่พึ่ง lib
-function TrendChart({ trends }) {
-  if (!trends.length) {
-    return <div className="text-center py-16 opacity-50 text-sm">ยังไม่มีการเคลื่อนไหวจริงในช่วงนี้<br />(ยอดยกมาและการปรับยอดไม่ถูกนับเป็น trend)</div>;
+// กราฟเส้น: แกน X = วันที่ (หรือเดือน), แกน Y = จำนวนอะไหล่ — นำเข้า (เขียว) vs เบิกออก (ฟ้า)
+function LineChart({ points, xLabel }) {
+  if (!points || points.length === 0) {
+    return <div className="text-center py-16 opacity-50 text-sm">ไม่มีข้อมูลในช่วงที่เลือก</div>;
   }
-  const max = Math.max(1, ...trends.map(t => Math.max(t.inbound, t.outbound)));
+  const H = 300, PAD_L = 58, PAD_R = 16, PAD_T = 12, PAD_B = 46;  // เผื่อที่สำหรับชื่อแกน X/Y
+  const n = points.length;
+  const W = Math.max(640, n * 28);          // กว้างตามจำนวนจุด (เลื่อนแนวนอนได้ถ้าเยอะ)
+  const plotW = W - PAD_L - PAD_R;
+  const plotH = H - PAD_T - PAD_B;
+  const yMax = Math.max(1, ...points.map(p => Math.max(p.inbound, p.outbound)));
+  const x = (i) => PAD_L + (n === 1 ? plotW / 2 : (i / (n - 1)) * plotW);
+  const y = (v) => PAD_T + plotH - (v / yMax) * plotH;
+  const pathOf = (key) => points.map((p, i) => `${i === 0 ? 'M' : 'L'}${x(i).toFixed(1)},${y(p[key]).toFixed(1)}`).join(' ');
+  const yTicks = 4;
+  const xEvery = Math.ceil(n / 12);         // โชว์ label แกน x ห่างๆ กันรก
+  const yMid = PAD_T + plotH / 2;
+
   return (
-    <div>
-      <div className="flex gap-4 text-xs mb-3">
-        <span className="flex items-center gap-1"><span className="w-3 h-3 rounded-sm bg-success inline-block" /> นำเข้า</span>
-        <span className="flex items-center gap-1"><span className="w-3 h-3 rounded-sm bg-info inline-block" /> เบิกออก</span>
-      </div>
-      <div className="overflow-x-auto">
-        <div className="flex items-end gap-4 h-52 min-w-max px-2 border-b border-base-300 pb-0">
-          {trends.map(t => (
-            <div key={t.period} className="flex flex-col items-center gap-1 justify-end">
-              <div className="flex items-end gap-1 h-44">
-                <div className="w-5 bg-success rounded-t transition-all tooltip" data-tip={`นำเข้า ${nf(t.inbound)}`}
-                  style={{ height: `${(t.inbound / max) * 100}%`, minHeight: t.inbound > 0 ? '3px' : '0' }} />
-                <div className="w-5 bg-info rounded-t transition-all tooltip" data-tip={`เบิกออก ${nf(t.outbound)}`}
-                  style={{ height: `${(t.outbound / max) * 100}%`, minHeight: t.outbound > 0 ? '3px' : '0' }} />
-              </div>
-              <span className="text-[10px] opacity-70 whitespace-nowrap">{t.period}</span>
-            </div>
-          ))}
-        </div>
-      </div>
+    <div className="overflow-x-auto">
+      <svg viewBox={`0 0 ${W} ${H}`} width={W} height={H} className="max-w-none">
+        {/* เส้นตาราง + ป้ายค่าแกน Y */}
+        {Array.from({ length: yTicks + 1 }, (_, i) => {
+          const v = (yMax / yTicks) * i;
+          const yy = y(v);
+          return (
+            <g key={i}>
+              <line x1={PAD_L} y1={yy} x2={W - PAD_R} y2={yy} className="stroke-base-300" strokeWidth="1" />
+              <text x={PAD_L - 8} y={yy + 3} textAnchor="end" className="fill-base-content/50" fontSize="9">{nf(Math.round(v))}</text>
+            </g>
+          );
+        })}
+        {/* ป้ายค่าแกน X (วันที่/เดือน) */}
+        {points.map((p, i) => (i % xEvery === 0 || i === n - 1) ? (
+          <text key={`x${i}`} x={x(i)} y={PAD_T + plotH + 16} textAnchor="middle" className="fill-base-content/50" fontSize="9">{p.label}</text>
+        ) : null)}
+        {/* เส้นข้อมูล */}
+        <g className="text-success"><path d={pathOf('inbound')} fill="none" stroke="currentColor" strokeWidth="2" strokeLinejoin="round" /></g>
+        <g className="text-info"><path d={pathOf('outbound')} fill="none" stroke="currentColor" strokeWidth="2" strokeLinejoin="round" /></g>
+        {/* จุดบนเส้น (เฉพาะวันที่มียอด) */}
+        {points.map((p, i) => (
+          <g key={`d${i}`}>
+            {p.inbound > 0 && <circle cx={x(i)} cy={y(p.inbound)} r="2.5" className="fill-success" />}
+            {p.outbound > 0 && <circle cx={x(i)} cy={y(p.outbound)} r="2.5" className="fill-info" />}
+          </g>
+        ))}
+        {/* ชื่อแกน */}
+        <text x={16} y={yMid} transform={`rotate(-90 16 ${yMid})`} textAnchor="middle" className="fill-base-content/70 font-medium" fontSize="11">จำนวนอะไหล่</text>
+        <text x={PAD_L + plotW / 2} y={H - 6} textAnchor="middle" className="fill-base-content/70 font-medium" fontSize="11">{xLabel}</text>
+      </svg>
     </div>
   );
 }
@@ -79,12 +102,12 @@ function TopTable({ title, rows, valueKey, valueLabel, unit }) {
   );
 }
 
-// แยกตามหมวดหมู่ — แท่งแนวนอน
+// แยกตามหมวดหมู่ — แท่งแนวนอน แสดงครบทุกหมวด (01-23) เลื่อนดูภายในกรอบได้
 function CategoryBreakdown({ byCategory }) {
   if (!byCategory.length) return <div className="text-center py-8 opacity-50 text-sm">ยังไม่มีการเคลื่อนไหวแยกหมวดหมู่</div>;
   const max = Math.max(1, ...byCategory.map(c => Math.max(c.inbound, c.outbound)));
   return (
-    <div className="space-y-3">
+    <div className="max-h-[420px] overflow-y-auto pr-1 space-y-3">
       {byCategory.map(c => (
         <div key={c.groupId}>
           <div className="flex justify-between text-xs mb-1">
@@ -101,30 +124,25 @@ function CategoryBreakdown({ byCategory }) {
   );
 }
 
-// พื้นที่ AI — เตรียมโครงไว้ ยังไม่เปิดใช้ (รอข้อมูลย้อนหลังพอสำหรับ train)
-function AiForecastSection() {
+// การ์ด placeholder ตอนที่ ML ยังไม่ได้รัน (ไม่มี forecasts.json)
+function ForecastPlaceholder({ note }) {
   const cards = [
     { icon: '📅', title: 'คาดการณ์วันของหมด', desc: 'ประเมินว่าสินค้าแต่ละตัวจะหมดสต็อกวันไหน จากอัตราการเบิกที่ผ่านมา' },
-    { icon: '📦', title: 'จำนวนที่ควรสั่งเพิ่ม', desc: 'แนะนำปริมาณสั่งซื้อที่เหมาะสม (reorder point / EOQ)' },
+    { icon: '📦', title: 'จำนวนที่ควรสั่งเพิ่ม', desc: 'แนะนำปริมาณสั่งซื้อที่เหมาะสม (reorder point)' },
     { icon: '💰', title: 'งบประมาณสั่งซื้อ', desc: 'ประเมินงบที่ต้องใช้จากราคาล่าสุด × จำนวนที่ควรสั่ง' },
     { icon: '🚚', title: 'ระยะเวลาจัดส่ง', desc: 'คาดการณ์ lead time ต่อผู้ขาย เพื่อวางแผนสั่งล่วงหน้า' }
   ];
   return (
     <div className="card glass-panel p-6 relative overflow-hidden">
-      <div className="absolute top-4 right-4">
-        <span className="badge badge-primary badge-outline gap-1">🔒 เร็วๆ นี้</span>
-      </div>
+      <div className="absolute top-4 right-4"><span className="badge badge-primary badge-outline gap-1">🔒 รอข้อมูล</span></div>
       <h2 className="font-bold text-xl text-gradient w-fit mb-1">🤖 ผู้ช่วย AI พยากรณ์คลังสินค้า</h2>
-      <p className="text-sm text-base-content/60 mb-5 max-w-2xl">
-        ส่วนนี้เตรียมพื้นที่ไว้สำหรับการวิเคราะห์ด้วย AI — ต้องสะสมข้อมูลการนำเข้า/เบิกออกจริงระยะหนึ่งก่อนจึงจะพยากรณ์ได้แม่นยำ
-      </p>
+      <p className="text-sm text-base-content/60 mb-5 max-w-2xl">{note}</p>
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
         {cards.map(c => (
           <div key={c.title} className="rounded-xl border border-base-300 bg-base-200/40 p-4 opacity-70">
             <div className="text-3xl mb-2">{c.icon}</div>
             <div className="font-semibold text-sm mb-1">{c.title}</div>
             <div className="text-xs text-base-content/60 leading-relaxed">{c.desc}</div>
-            <div className="mt-3 text-[10px] font-semibold uppercase tracking-wide text-primary/70">รอข้อมูลฝึกโมเดล</div>
           </div>
         ))}
       </div>
@@ -132,33 +150,158 @@ function AiForecastSection() {
   );
 }
 
+// พื้นที่ AI — ดึงผลพยากรณ์จริงจาก ML service (/api/analysis/forecast) มาแสดง
+function AiForecastSection() {
+  const [fc, setFc] = useState(null);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    let alive = true;
+    fetchApi('/api/analysis/forecast')
+      .then(j => { if (alive) setFc(j); })
+      .catch(() => { if (alive) setFc({ available: false }); })
+      .finally(() => { if (alive) setLoading(false); });
+    return () => { alive = false; };
+  }, []);
+
+  if (loading) {
+    return <div className="card glass-panel p-6 flex items-center gap-3"><span className="loading loading-spinner text-primary" /> กำลังโหลดผลพยากรณ์ AI...</div>;
+  }
+  if (!fc?.available) {
+    return <ForecastPlaceholder note="ยังไม่มีผลพยากรณ์ — ให้รัน ML pipeline (ml/pipeline.py) เพื่อสร้างผลจากข้อมูลจริง แล้วผลจะขึ้นตรงนี้อัตโนมัติ" />;
+  }
+
+  const { total = {}, model_health = {}, reorder_suggestions = [], stale, ageHours } = fc;
+  const seen = model_health?.out?.total_seen ?? 0;
+  const mae = model_health?.out?.total_mae;
+  const preliminary = seen < 30; // ข้อมูลยังน้อย = ผลเบื้องต้น
+
+  return (
+    <div className="card glass-panel p-6 space-y-5">
+      <div className="flex items-start justify-between gap-3 flex-wrap">
+        <div>
+          <h2 className="font-bold text-xl text-gradient w-fit mb-1">🤖 ผู้ช่วย AI พยากรณ์คลังสินค้า</h2>
+          <p className="text-sm text-base-content/60">พยากรณ์ demand + แนะนำการสั่งซื้อ จากโมเดล online learning</p>
+        </div>
+        <div className="flex flex-col items-end gap-1">
+          <span className={`badge gap-1 ${stale ? 'badge-warning' : 'badge-success'} text-white`}>
+            {stale ? `⚠️ ข้อมูล ${ageHours} ชม.` : '🟢 อัปเดตล่าสุด'}
+          </span>
+          {preliminary && <span className="text-[10px] text-warning">ผลเบื้องต้น (โมเดลเพิ่งเรียนรู้ {seen} จุด)</span>}
+        </div>
+      </div>
+
+      {/* สรุปภาพรวมที่พยากรณ์ */}
+      <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
+        <div className="rounded-xl bg-base-200/50 p-3">
+          <div className="text-xs opacity-60">เบิกออก/วัน (คาด)</div>
+          <div className="text-xl font-bold text-info">{nf(total.predicted_daily_out)}</div>
+        </div>
+        <div className="rounded-xl bg-base-200/50 p-3">
+          <div className="text-xs opacity-60">รับเข้า/วัน (คาด)</div>
+          <div className="text-xl font-bold text-success">{nf(total.predicted_daily_in)}</div>
+        </div>
+        <div className="rounded-xl bg-base-200/50 p-3">
+          <div className="text-xs opacity-60">งบสั่งซื้อ/เดือน (คาด)</div>
+          <div className="text-xl font-bold text-primary">{baht(total.predicted_monthly_cost_burden)}</div>
+        </div>
+        <div className="rounded-xl bg-base-200/50 p-3">
+          <div className="text-xs opacity-60">ความคลาดเคลื่อนโมเดล (MAE)</div>
+          <div className="text-xl font-bold">{mae != null ? nf(mae) : '—'}</div>
+        </div>
+      </div>
+
+      {/* ตารางแนะนำการสั่งซื้อ — แมป 4 ความสามารถ AI เป็นคอลัมน์ */}
+      <div>
+        <h3 className="font-bold mb-1">📋 รายการที่ควรสั่งเพิ่ม (เรียงตามความเร่งด่วน)</h3>
+        <p className="text-xs text-base-content/50 mb-3">คำนวณจาก: อัตราเบิกที่พยากรณ์ × lead time เทียบกับยอดคงเหลือ</p>
+        {reorder_suggestions.length === 0 ? (
+          <div className="text-center py-8 opacity-50 text-sm">ยังไม่มีรายการที่ต้องสั่งเพิ่มในตอนนี้ 👍</div>
+        ) : (
+          <div className="overflow-x-auto">
+            <table className="table table-sm">
+              <thead>
+                <tr>
+                  <th>รหัส</th><th>ชื่อสินค้า</th>
+                  <th className="text-right">คงเหลือ</th>
+                  <th className="text-right">📅 หมดใน (วัน)</th>
+                  <th className="text-right">📦 ควรสั่ง</th>
+                  <th className="text-right">💰 งบ</th>
+                  <th className="text-right">🚚 Lead (วัน)</th>
+                </tr>
+              </thead>
+              <tbody>
+                {reorder_suggestions.map(r => {
+                  const urgent = r.stockout_in_days != null && r.stockout_in_days <= r.lead_time_days;
+                  return (
+                    <tr key={r.sku} className="hover:bg-base-200/40">
+                      <td className="font-mono text-xs font-semibold">{r.sku}</td>
+                      <td className="text-sm max-w-[200px] truncate" title={r.name}>{r.name}</td>
+                      <td className="text-right">{nf(r.current_stock)}</td>
+                      <td className={`text-right font-bold ${urgent ? 'text-error' : ''}`}>
+                        {r.stockout_in_days == null ? '—' : r.stockout_in_days}
+                        {urgent && ' ⚠️'}
+                      </td>
+                      <td className="text-right font-bold text-primary">{nf(r.reorder_qty)}</td>
+                      <td className="text-right">{r.reorder_budget > 0 ? baht(r.reorder_budget) : '—'}</td>
+                      <td className="text-right opacity-70">{r.lead_time_days}</td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
 export default function Analysis() {
-  const [period, setPeriod] = useState('month');
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(true);
+  const [trendMode, setTrendMode] = useState('month');   // 'month' = รายวันในเดือน | 'year' = รายเดือนในปี
+  const [trendValue, setTrendValue] = useState('');       // เดือน '2026-07' หรือปี '2026' ที่เลือก
+  const [trendPoints, setTrendPoints] = useState([]);
 
   const load = useCallback(async ({ silent = false } = {}) => {
     if (!silent) setLoading(true);
     try {
-      const json = await fetchApi(`/api/analysis?period=${period}`);
-      if (json.success) setData(json);
+      const json = await fetchApi('/api/analysis');
+      if (json.success) {
+        setData(json);
+        // ครั้งแรกตั้ง dropdown เป็นเดือนล่าสุดที่มีข้อมูล
+        setTrendValue(prev => prev || json.availableMonths?.[0] || '');
+      }
     } catch (err) {
       console.error('Analysis fetch error:', err);
     } finally {
       if (!silent) setLoading(false);
     }
-  }, [period]);
+  }, []);
 
   useEffect(() => { load(); }, [load]);
   useEffect(() => {
-    const refresh = () => load({ silent: true });
-    const off = onServerEvent('transactions', refresh);
+    const off = onServerEvent('transactions', () => load({ silent: true }));
     return off;
   }, [load]);
 
+  // ดึงข้อมูลกราฟเส้นเมื่อเปลี่ยนโหมด/ช่วงที่เลือก
+  useEffect(() => {
+    if (!trendValue) { setTrendPoints([]); return; }
+    let alive = true;
+    fetchApi(`/api/analysis/trend?mode=${trendMode}&value=${encodeURIComponent(trendValue)}`)
+      .then(j => { if (alive && j.success) setTrendPoints(j.points || []); })
+      .catch(() => { if (alive) setTrendPoints([]); });
+    return () => { alive = false; };
+  }, [trendMode, trendValue]);
+
   if (loading || !data) return <div className="p-4"><DashboardSkeleton /></div>;
 
-  const { trends, topByQty, topByFrequency, byCategory, totals } = data;
+  const { topByQty, topByFrequency, byCategory, totals, availableMonths = [], availableYears = [] } = data;
+  const trendOptions = trendMode === 'year' ? availableYears : availableMonths;
+  // สลับโหมด → เลือกค่าล่าสุดของโหมดนั้นให้อัตโนมัติ (กัน value ไม่ตรงชนิด)
+  const switchMode = (m) => { setTrendMode(m); setTrendValue((m === 'year' ? availableYears : availableMonths)[0] || ''); };
 
   return (
     <div className="p-4 space-y-6 animate-fade-in">
@@ -176,16 +319,29 @@ export default function Analysis() {
         <StatCard label="ยอดคลาดเคลื่อน" value={nf(totals.discrepancyItems)} accent="text-warning" sub="สินค้ายอดติดลบ" />
       </div>
 
-      {/* Trend */}
+      {/* Trend (กราฟเส้น เลือกเดือน/ปีได้) */}
       <div className="card glass-panel p-5">
-        <div className="flex items-center justify-between mb-4">
-          <h2 className="font-bold text-lg">แนวโน้มนำเข้า / เบิกออก</h2>
-          <div className="join">
-            <button className={`btn btn-sm join-item ${period === 'month' ? 'btn-primary text-white' : 'btn-ghost'}`} onClick={() => setPeriod('month')}>รายเดือน</button>
-            <button className={`btn btn-sm join-item ${period === 'year' ? 'btn-primary text-white' : 'btn-ghost'}`} onClick={() => setPeriod('year')}>รายปี</button>
+        <div className="flex items-center justify-between mb-3 gap-3 flex-wrap">
+          {/* ซ้าย: หัวข้อ + ปุ่มรายเดือน/รายปี + dropdown เลือกช่วง */}
+          <div className="flex items-center gap-3 flex-wrap">
+            <h2 className="font-bold text-lg">แนวโน้มนำเข้า / เบิกออก</h2>
+            <div className="join shrink-0">
+              <button className={`btn btn-sm join-item ${trendMode === 'month' ? 'btn-primary text-white' : 'btn-ghost'}`} onClick={() => switchMode('month')}>รายเดือน</button>
+              <button className={`btn btn-sm join-item ${trendMode === 'year' ? 'btn-primary text-white' : 'btn-ghost'}`} onClick={() => switchMode('year')}>รายปี</button>
+            </div>
+            <select className="select select-bordered select-sm shrink-0" value={trendValue} onChange={(e) => setTrendValue(e.target.value)}>
+              {trendOptions.length === 0 && <option value="">— ไม่มีข้อมูล —</option>}
+              {trendOptions.map(o => <option key={o} value={o}>{o}</option>)}
+            </select>
+          </div>
+          {/* ขวาสุด: legend */}
+          <div className="flex items-center gap-4 text-xs shrink-0">
+            <span className="flex items-center gap-1"><span className="w-4 h-0.5 bg-success inline-block" /> นำเข้า</span>
+            <span className="flex items-center gap-1"><span className="w-4 h-0.5 bg-info inline-block" /> เบิกออก</span>
           </div>
         </div>
-        <TrendChart trends={trends} />
+        <LineChart points={trendPoints} xLabel={trendMode === 'month' ? 'วันที่ในเดือน' : 'เดือนในปี'} />
+        <p className="text-[10px] opacity-40 text-right mt-1">นับเฉพาะการเคลื่อนไหวจริง (ไม่รวมยอดยกมา/ปรับยอด)</p>
       </div>
 
       {/* สินค้าที่เบิกเยอะ/บ่อย */}
