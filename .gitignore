@@ -1,0 +1,43 @@
+# Logs
+logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+lerna-debug.log*
+
+node_modules
+dist
+dist-ssr
+*.local
+.env
+**/.env
+!.env.example
+!**/.env.example
+
+# Runtime data
+# ฐานข้อมูล + ไฟล์สำรองทุกชนิด ห้ามขึ้น git เด็ดขาด (มีข้อมูลจริง + hash รหัสผ่านผู้ใช้)
+*.sqlite
+*.sqlite*
+*.db
+*.db.*
+server/identifier.sqlite
+server/identifier.sqlite-shm
+server/identifier.sqlite-wal
+server/identifier.test.sqlite*
+server/data/users.json
+server/uploads/*
+!server/uploads/.gitkeep
+server/backups/
+
+# Editor directories and files
+.vscode/*
+!.vscode/extensions.json
+.idea
+.DS_Store
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?

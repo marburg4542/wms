@@ -1,0 +1,200 @@
+@import "tailwindcss";
+/* ไม่ใช้ --prefersdark เพราะมันสร้าง media query ที่ทับธีม light ตอนเครื่องผู้ใช้เป็น system dark
+   แอปควบคุมธีมเองผ่าน data-theme (ปุ่มสลับบน navbar) เสมออยู่แล้ว */
+@plugin "daisyui" {
+  themes: light --default, dark;
+}
+
+/* ==========================================================================
+   WMS Theme — Modern SaaS UI (น้ำเงิน / ฟ้า / ขาว)
+   Light: ขาวสะอาด ไล่เฉดฟ้า | Dark: กรมท่าลึก ไล่เฉดน้ำเงิน
+   ========================================================================== */
+
+@plugin "daisyui/theme" {
+  name: "light";
+  default: true;
+  color-scheme: light;
+
+  --color-base-100: #ffffff;
+  --color-base-200: #f1f7fd;
+  --color-base-300: #dde9f7;
+  --color-base-content: #0b2239;
+
+  --color-primary: #2563eb;
+  --color-primary-content: #ffffff;
+  --color-secondary: #0ea5e9;
+  --color-secondary-content: #ffffff;
+  --color-accent: #38bdf8;
+  --color-accent-content: #082f49;
+  --color-neutral: #1e3a5f;
+  --color-neutral-content: #ffffff;
+
+  --color-info: #0284c7;
+  --color-info-content: #ffffff;
+  --color-success: #059669;
+  --color-success-content: #ffffff;
+  --color-warning: #d97706;
+  --color-warning-content: #ffffff;
+  --color-error: #dc2626;
+  --color-error-content: #ffffff;
+
+  --radius-selector: 0.75rem;
+  --radius-field: 0.75rem;
+  --radius-box: 1rem;
+  --border: 1px;
+  --depth: 1;
+  --noise: 0;
+}
+
+@plugin "daisyui/theme" {
+  name: "dark";
+  color-scheme: dark;
+
+  --color-base-100: #0e1c30;
+  --color-base-200: #0a1525;
+  --color-base-300: #1c3252;
+  --color-base-content: #d9e8fb;
+
+  --color-primary: #3b82f6;
+  --color-primary-content: #eff6ff;
+  --color-secondary: #38bdf8;
+  --color-secondary-content: #06283e;
+  --color-accent: #7dd3fc;
+  --color-accent-content: #062a3f;
+  --color-neutral: #16283f;
+  --color-neutral-content: #d9e8fb;
+
+  --color-info: #38bdf8;
+  --color-info-content: #06283e;
+  --color-success: #34d399;
+  --color-success-content: #022c22;
+  --color-warning: #fbbf24;
+  --color-warning-content: #451a03;
+  --color-error: #f87171;
+  --color-error-content: #450a0a;
+
+  --radius-selector: 0.75rem;
+  --radius-field: 0.75rem;
+  --radius-box: 1rem;
+  --border: 1px;
+  --depth: 1;
+  --noise: 0;
+}
+
+/* --------------------------------------------------------------------------
+   พื้นหลัง Gradient ทั้งแอป (fixed — เลื่อนหน้าแล้วแสงไม่ขยับ)
+   -------------------------------------------------------------------------- */
+body {
+  min-height: 100vh;
+  /* โทนสว่าง: ขาวนวลโปร่ง ไล่ลงฟ้าอ่อน + แสงฟ้านุ่มๆ 2 จุด (ไม่ให้ขุ่น) */
+  background:
+    radial-gradient(900px 540px at 90% -10%, rgba(125, 211, 252, 0.32), transparent 55%),
+    radial-gradient(720px 480px at -6% 22%, rgba(147, 197, 253, 0.24), transparent 52%),
+    linear-gradient(168deg, #fdfeff 0%, #f3f8fe 42%, #e5f0fb 100%);
+  background-attachment: fixed;
+}
+
+html[data-theme="dark"] body {
+  background:
+    radial-gradient(1000px 620px at 88% -12%, rgba(56, 189, 248, 0.10), transparent 62%),
+    radial-gradient(820px 540px at -8% 28%, rgba(59, 130, 246, 0.14), transparent 58%),
+    radial-gradient(700px 460px at 55% 110%, rgba(14, 165, 233, 0.08), transparent 55%),
+    linear-gradient(160deg, #060d1a 0%, #0a1730 52%, #0d2140 100%);
+}
+
+/* --------------------------------------------------------------------------
+   Glassmorphism — พื้นผิวโปร่งแสงคล้ายกระจก ปรับตามธีมอัตโนมัติ
+   .glass-panel = การ์ด/แถบทั่วไป | .glass-modal = กล่อง modal (ทึบกว่าเพื่ออ่านง่าย)
+   -------------------------------------------------------------------------- */
+.glass-panel {
+  /* โหมดสว่าง: กระจกฝ้าขาว (frosted white) — ขุ่นพอให้เนื้อหาคมชัด ขอบขาวรับแสง */
+  background: color-mix(in srgb, #ffffff 78%, transparent);
+  -webkit-backdrop-filter: blur(18px) saturate(1.6);
+  backdrop-filter: blur(18px) saturate(1.6);
+  border: 1px solid rgba(255, 255, 255, 0.65);
+  box-shadow:
+    0 10px 40px -18px rgba(37, 99, 235, 0.28),
+    0 2px 8px -4px rgba(11, 34, 57, 0.06),
+    inset 0 1px 0 rgba(255, 255, 255, 0.9);
+}
+
+html[data-theme="dark"] .glass-panel {
+  background: color-mix(in srgb, var(--color-base-100) 55%, transparent);
+  border-color: color-mix(in srgb, var(--color-base-content) 9%, transparent);
+  box-shadow:
+    0 8px 32px -12px rgba(2, 8, 20, 0.7),
+    inset 0 1px 0 color-mix(in srgb, #7dd3fc 10%, transparent);
+}
+
+.glass-modal {
+  background: color-mix(in srgb, #ffffff 92%, transparent);
+  -webkit-backdrop-filter: blur(24px) saturate(1.5);
+  backdrop-filter: blur(24px) saturate(1.5);
+  border: 1px solid rgba(255, 255, 255, 0.7);
+  box-shadow: 0 24px 64px -24px rgba(37, 99, 235, 0.35);
+}
+
+html[data-theme="dark"] .glass-modal {
+  background: color-mix(in srgb, var(--color-base-100) 88%, transparent);
+  border-color: color-mix(in srgb, var(--color-base-content) 10%, transparent);
+  box-shadow: 0 24px 64px -24px rgba(2, 8, 20, 0.8);
+}
+
+/* --------------------------------------------------------------------------
+   ลูกเล่นพรีเมียม: หัวข้อไล่สี, ปุ่มหลักไล่สี, scrollbar บาง
+   -------------------------------------------------------------------------- */
+.text-gradient {
+  background: linear-gradient(92deg, var(--color-primary), var(--color-secondary));
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+}
+
+.btn-primary:not(:disabled, .btn-ghost, .btn-outline) {
+  background-image: linear-gradient(135deg, var(--color-primary), var(--color-secondary));
+  border: none;
+}
+
+*::-webkit-scrollbar { width: 8px; height: 8px; }
+*::-webkit-scrollbar-track { background: transparent; }
+*::-webkit-scrollbar-thumb {
+  background: color-mix(in srgb, var(--color-primary) 30%, transparent);
+  border-radius: 8px;
+}
+*::-webkit-scrollbar-thumb:hover {
+  background: color-mix(in srgb, var(--color-primary) 50%, transparent);
+}
+
+/* มือถือ: ปุ่ม/ลิงก์ตอบสนองไวขึ้น (ตัด tap delay 300ms + กัน double-tap zoom โดยไม่ตั้งใจ) */
+button, .btn, a, label, [role="button"], input[type="checkbox"], input[type="radio"] {
+  touch-action: manipulation;
+}
+
+/* เพิ่ม Animation สำหรับ WMS */
+@layer utilities {
+  /* ห้ามใส่ forwards: จะทำให้ transform ของเฟรมสุดท้ายค้างถาวร แล้ว element นี้
+     จะกลายเป็น containing block ทำให้ลูกที่เป็น position:fixed (modal, ปุ่มลอย)
+     ไปยึดกับ element นี้แทนที่จะยึดกับจอ  — เฟรม to เหมือนค่าเริ่มต้นอยู่แล้ว จึงไม่กระตุก */
+  .animate-fade-in {
+    animation: fadeIn 0.4s ease-out;
+  }
+}
+
+@keyframes fadeIn {
+  from {
+    opacity: 0;
+    transform: translateY(10px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes slideLeft {
+  from { transform: translateX(100%); }
+  to { transform: translateX(0); }
+}
+.animate-slide-left {
+  animation: slideLeft 0.3s cubic-bezier(0.4, 0, 0.2, 1) forwards;
+}
