@@ -31,6 +31,12 @@ server/uploads/*
 !server/uploads/.gitkeep
 server/backups/
 
+# ML service (Python) — runtime artifacts, ไม่ commit
+ml/state/
+ml/.venv/
+__pycache__/
+*.pyc
+
 # Editor directories and files
 .vscode/*
 !.vscode/extensions.json
