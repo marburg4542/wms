@@ -30,8 +30,11 @@ export default function Homepage() {
 
   const [exportModalOpen, setExportModalOpen] = useState(false);
   const [exportType, setExportType] = useState('day');
+  const [exportTypeFilter, setExportTypeFilter] = useState('all');   // ทั้งหมด/นำเข้า/เบิกออก
+  const [exportProjectFilter, setExportProjectFilter] = useState('all');
   const [exporting, setExporting] = useState(false);
-  useBodyScrollLock(!!approveModal || exportModalOpen); // freeze พื้นหลังตอนเปิด modal
+  const [itemsModal, setItemsModal] = useState(null); // ใบเบิกที่กำลังดูรายการอะไหล่ (recheck ตอนส่งมอบ)
+  useBodyScrollLock(!!approveModal || exportModalOpen || !!itemsModal); // freeze พื้นหลังตอนเปิด modal
 
   const offset = new Date().getTimezoneOffset() * 60000;
   const todayStr = new Date(Date.now() - offset).toISOString().slice(0, 10);
@@ -39,6 +42,12 @@ export default function Homepage() {
   // ข้อมูลสำหรับ export ดึงแยกตามช่วงเวลาที่เลือก ไม่แบกประวัติทั้งหมดมากับ dashboard
   const [exportLogs, setExportLogs] = useState([]);
   const [exportLoading, setExportLoading] = useState(false);
+  const [projectList, setProjectList] = useState([]); // อิงรายชื่อโปรเจกต์จากหน้าจัดการสินค้าคงคลัง
+
+  // โหลดรายชื่อโปรเจกต์ (ใช้เป็นตัวเลือกกรองใน export) — ให้ตรงกับที่จัดการไว้ ไม่ใช่เดาจากข้อมูลในช่วง
+  useEffect(() => {
+    fetchApi('/api/projects').then(j => { if (j.success) setProjectList(j.projects || []); }).catch(() => {});
+  }, []);
 
   const loadDashboardData = useCallback(async () => {
     try {
@@ -121,8 +130,13 @@ export default function Homepage() {
     return () => { cancelled = true; };
   }, [exportModalOpen, exportType, exportValue]);
 
+  // ตัวเลือกโปรเจกต์สำหรับ dropdown กรอง — อิงรายชื่อในหน้าจัดการสินค้าคงคลัง (ตาราง projects)
+  const exportProjectOptions = projectList.map(p => p.name);
+
   const exportFilteredLogs = exportLogs
     .filter(t => (t.status !== 'Pending' || t.type === 'INBOUND') && !isWaitingPickup(t))
+    .filter(t => exportTypeFilter === 'all' || t.type === exportTypeFilter)              // กรอง นำเข้า/เบิกออก
+    .filter(t => exportProjectFilter === 'all' || exportTypeFilter === 'INBOUND' || (t.project || '') === exportProjectFilter) // กรองโปรเจกต์ (นำเข้าไม่มีโปรเจกต์ จึงข้าม)
     .sort((a, b) => new Date(b.requestDate) - new Date(a.requestDate));
 
   // 👇 เพิ่ม imageUrl ในฟังก์ชัน GetItems
@@ -266,7 +280,9 @@ export default function Homepage() {
       doc.addFont('Sarabun-Regular.ttf', 'Sarabun', 'bold');
       doc.setFont('Sarabun');
 
-      const periodLabel = exportType === 'day' ? `วันที่ ${exportValue}` : exportType === 'month' ? `เดือน ${exportValue}` : `ปี ${exportValue}`;
+      let periodLabel = exportType === 'day' ? `วันที่ ${exportValue}` : exportType === 'month' ? `เดือน ${exportValue}` : `ปี ${exportValue}`;
+      if (exportTypeFilter !== 'all') periodLabel += ` · ${txTypeLabel(exportTypeFilter)}`;
+      if (exportProjectFilter !== 'all') periodLabel += ` · โปรเจกต์: ${exportProjectFilter}`;
       const IMG_COL = 3; // index คอลัมน์รูปใน body
 
       autoTable(doc, {
@@ -361,7 +377,11 @@ export default function Homepage() {
                     <td className="text-xs font-mono">{tx.transactionId || tx.id}</td>
                     <td className="text-xs">{tx.requesterUsername}</td>
                     <td className="text-xs max-w-25 truncate">{tx.project}</td>
-                    <td className="text-xs">{getItemsToRender(tx).length} รายการ</td>
+                    <td>
+                      <button onClick={() => setItemsModal(tx)} className="btn btn-ghost btn-xs text-primary gap-1" title="คลิกดูรายการอะไหล่ (recheck ก่อนส่งมอบ)">
+                        {getItemsToRender(tx).length} รายการ
+                      </button>
+                    </td>
                     <td>
                       {tx.status === 'Pending'
                         ? <span className="badge badge-xs badge-warning">รออนุมัติ</span>
@@ -374,7 +394,7 @@ export default function Homepage() {
                           : <span className="text-xs opacity-50">-</span>
                       ) : (
                         isAdmin
-                          ? <button onClick={() => handlePickup(tx)} className="btn btn-xs btn-success text-white shadow-sm">รับของแล้ว</button>
+                          ? <button onClick={() => handlePickup(tx)} className="btn btn-xs btn-success text-white shadow-sm">รับแล้ว</button>
                           : <span className="badge badge-xs badge-success badge-outline">มารับสินค้าได้</span>
                       )}
                     </td>
@@ -493,6 +513,36 @@ export default function Homepage() {
       )}
 
       {/* Modal สำหรับการเลือก Export */}
+      {itemsModal && (
+        <div className="fixed inset-0 z-120 flex items-center justify-center backdrop-blur-md p-4" onClick={() => setItemsModal(null)}>
+          <div className="glass-modal p-5 sm:p-6 rounded-2xl max-w-lg w-full max-h-[85vh] overflow-y-auto" onClick={e => e.stopPropagation()}>
+            <h3 className="font-bold text-lg border-b border-base-200 pb-3 mb-1 flex items-center gap-2">📋 รายการอะไหล่ในใบเบิก</h3>
+            <p className="text-xs text-base-content/60 mb-4">
+              {itemsModal.transactionId || itemsModal.id} · โปรเจกต์: {itemsModal.project || '-'} · ผู้ขอ: {itemsModal.requesterUsername || '-'}
+            </p>
+            <div className="overflow-x-auto">
+              <table className="table table-sm">
+                <thead><tr><th>รูป</th><th>SKU</th><th>ชื่อสินค้า</th><th className="text-right">ขอ</th><th className="text-right">อนุมัติ/ส่งมอบ</th></tr></thead>
+                <tbody>
+                  {getItemsToRender(itemsModal).map((it, i) => (
+                    <tr key={i} className="hover:bg-base-200/40">
+                      <td>
+                        <div className="avatar"><div className="w-10 h-10 rounded bg-base-300"><img src={getImg(it.imageUrl)} crossOrigin="anonymous" alt={it.sku} /></div></div>
+                      </td>
+                      <td className="font-mono text-xs">{it.sku}</td>
+                      <td className="text-sm">{it.productName}</td>
+                      <td className="text-right">{it.requestedQty}</td>
+                      <td className="text-right font-bold text-success">{it.approvedQty}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+            <div className="flex justify-end mt-4"><button className="btn btn-ghost" onClick={() => setItemsModal(null)}>ปิด</button></div>
+          </div>
+        </div>
+      )}
+
       {exportModalOpen && (
         <div className="fixed inset-0 z-120 flex items-center justify-center backdrop-blur-md p-4">
           <div className="glass-modal p-5 sm:p-6 rounded-2xl max-w-md w-full max-h-[85vh] overflow-y-auto">
@@ -511,6 +561,24 @@ export default function Homepage() {
                 {exportType === 'day' && <input type="date" className="input input-bordered w-full" value={exportValue} onChange={e => setExportValue(e.target.value)} />}
                 {exportType === 'month' && <input type="month" className="input input-bordered w-full" value={exportValue} onChange={e => setExportValue(e.target.value)} />}
                 {exportType === 'year' && <input type="number" min="2020" max="2100" className="input input-bordered w-full" value={exportValue} onChange={e => setExportValue(e.target.value)} />}
+              </div>
+              <div className="grid grid-cols-2 gap-3">
+                <div className="form-control">
+                  <label className="label text-sm font-bold">ประเภทรายการ</label>
+                  <select className="select select-bordered w-full" value={exportTypeFilter} onChange={e => setExportTypeFilter(e.target.value)}>
+                    <option value="all">ทั้งหมด</option>
+                    <option value="INBOUND">นำเข้า</option>
+                    <option value="OUTBOUND">เบิกออก</option>
+                  </select>
+                </div>
+                <div className="form-control">
+                  <label className="label text-sm font-bold">โปรเจกต์</label>
+                  <select className="select select-bordered w-full" value={exportProjectFilter} onChange={e => setExportProjectFilter(e.target.value)}
+                    disabled={exportTypeFilter === 'INBOUND'} title={exportTypeFilter === 'INBOUND' ? 'การนำเข้าไม่มีโปรเจกต์' : undefined}>
+                    <option value="all">ทุกโปรเจกต์</option>
+                    {exportProjectOptions.map(p => <option key={p} value={p}>{p}</option>)}
+                  </select>
+                </div>
               </div>
               <div className="bg-base-200 p-3 rounded-lg text-sm text-center">
                 {exportLoading

@@ -74,6 +74,7 @@ export default function Products() {
   const [productModal, setProductModal] = useState(false);
   const [editingSku, setEditingSku] = useState(null);
   const [productForm, setProductForm] = useState(emptyProductForm);
+  const [nextSkuPreview, setNextSkuPreview] = useState(''); // SKU อัตโนมัติที่จะได้ (โชว์ตอนเพิ่มสินค้าใหม่)
   const [imageFile, setImageFile] = useState(null);
   const [imagePreview, setImagePreview] = useState('');
   const [submitting, setSubmitting] = useState(false);
@@ -81,6 +82,14 @@ export default function Products() {
   const [totalPages, setTotalPages] = useState(1);
   const [totalItems, setTotalItems] = useState(0);
   const reqIdRef = useRef(0); // ตัวนับลำดับคำขอ — กัน response เก่ามาทับใหม่ (แก้จอกระพริบตอนสลับตัวกรอง)
+
+  // ดึง SKU อัตโนมัติของหมวดที่เลือก (เฉพาะตอนเพิ่มสินค้าใหม่) มาโชว์เป็นตัวอย่าง
+  useEffect(() => {
+    if (!productModal || editingSku || !productForm.groupId) return;
+    fetchApi(`/api/products/next-sku?group=${productForm.groupId}`)
+      .then(j => { if (j.success) setNextSkuPreview(j.sku); })
+      .catch(() => setNextSkuPreview(''));
+  }, [productModal, editingSku, productForm.groupId]);
   useBodyScrollLock(productModal || inboundModal || adjustModal || scanOpen); // freeze พื้นหลังตอนเปิด modal
 
   // silent = รีเฟรชเบื้องหลังโดยไม่โชว์ spinner (ใช้ตอน poll อัตโนมัติ)
@@ -247,12 +256,12 @@ export default function Products() {
     event.preventDefault();
     if (!productForm.name.trim()) return toast.error('กรุณาระบุชื่อสินค้า');
 
-    // แก้ไข SKU ได้ แต่ SKU ใหม่ต้องตามกติกา prefix หมวดหมู่ (server ตรวจซ้ำอีกชั้น)
+    // แก้ไข SKU ได้ แต่ SKU ใหม่ต้องขึ้นต้นด้วยรหัสหมวด (ไม่มีขีด เช่น 02001) — server ตรวจซ้ำอีกชั้น
     if (editingSku) {
       const newSku = productForm.sku.trim().toUpperCase();
       if (!newSku) return toast.error('กรุณาระบุ รหัสสินค้า');
-      if (newSku !== editingSku && !newSku.startsWith(`${productForm.groupId}-`)) {
-        return toast.error(`รหัสสินค้าใหม่ต้องขึ้นต้นด้วย ${productForm.groupId}-`);
+      if (newSku !== editingSku && !newSku.startsWith(productForm.groupId)) {
+        return toast.error(`รหัสสินค้าใหม่ต้องขึ้นต้นด้วย ${productForm.groupId}`);
       }
     }
 
@@ -274,10 +283,8 @@ export default function Products() {
       const method = editingSku ? 'PUT' : 'POST';
       const payload = {
         ...productForm,
-        // ตอนสร้างใหม่ ช่อง sku เก็บเฉพาะส่วนท้าย — ประกอบร่างกับรหัสหมวดหมู่ก่อนส่ง
-        sku: editingSku
-          ? productForm.sku
-          : (productForm.sku.trim() ? `${productForm.groupId}-${productForm.sku.trim()}` : ''),
+        // สร้างใหม่: ส่ง sku ว่าง → server รันเลขอัตโนมัติตามหมวด (กัน race/ซ้ำ) | แก้ไข: ส่งค่าที่กรอก
+        sku: editingSku ? productForm.sku : '',
         imageUrl,
         latestCost: productForm.latestCost === '' ? null : Number(productForm.latestCost),
         minStock: Number(productForm.minStock) || 0,
@@ -571,8 +578,8 @@ export default function Products() {
                   <span className="label-text text-xs font-bold">
                     SKU{' '}
                     {editingSku
-                      ? <span className="font-normal opacity-60">(แก้ไขได้ — ต้องขึ้นต้นด้วย {productForm.groupId}-)</span>
-                      : <span className="font-normal opacity-60">(เว้นว่าง = เลขอัตโนมัติ)</span>}
+                      ? <span className="font-normal opacity-60">(แก้ไขได้ — ต้องขึ้นต้นด้วย {productForm.groupId})</span>
+                      : <span className="font-normal opacity-60">(รันอัตโนมัติตามหมวด)</span>}
                   </span>
                   {editingSku ? (
                     <input
@@ -582,17 +589,12 @@ export default function Products() {
                       required
                     />
                   ) : (
-                    // 2 หลักแรกล็อกตามหมวดหมู่ที่เลือก แก้ได้เฉพาะเลขหลังขีด
-                    <div className="join w-full">
-                      <span className="join-item flex items-center px-4 bg-base-200 border border-base-300 font-mono font-bold text-sm">{productForm.groupId}-</span>
-                      <input
-                        className="input input-bordered join-item w-full font-mono"
-                        inputMode="numeric"
-                        value={productForm.sku}
-                        onChange={(e) => setProductForm({ ...productForm, sku: e.target.value.replace(/[^0-9a-zA-Z]/g, '') })}
-                        placeholder="เช่น 001"
-                      />
-                    </div>
+                    // สร้างใหม่: SKU รันอัตโนมัติ (รหัสหมวด + ลำดับถัดไป) แสดงเป็นตัวอย่าง แก้เองไม่ได้
+                    <input
+                      className="input input-bordered font-mono bg-base-200 cursor-not-allowed"
+                      value={nextSkuPreview || 'กำลังคำนวณ...'}
+                      readOnly tabIndex={-1}
+                    />
                   )}
                 </label>
                 <label className="form-control sm:col-span-2">
