@@ -2,6 +2,7 @@ import Database from 'better-sqlite3';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import { config } from './config.js';
+import { normalizeProject } from './utils/projects.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -163,6 +164,13 @@ db.exec(`
     details TEXT,
     created_at TEXT DEFAULT CURRENT_TIMESTAMP
   );
+
+  CREATE TABLE IF NOT EXISTS projects (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    name TEXT NOT NULL,          -- ชื่อที่แสดง (canonical)
+    norm TEXT NOT NULL UNIQUE,   -- ชื่อ normalize ใช้กันซ้ำ (งานTAI/tai/TAI = ตัวเดียว)
+    created_at TEXT DEFAULT CURRENT_TIMESTAMP
+  );
 `);
 
 // กลุ่มสินค้าเริ่มต้นสำหรับ item ที่สร้างเองโดยไม่ระบุกลุ่ม
@@ -170,6 +178,18 @@ db.prepare(`
   INSERT OR IGNORE INTO item_groups (group_id, group_name, description)
   VALUES ('00', 'Default', 'Default group for manually created items')
 `).run();
+
+// Seed ตาราง projects จากโปรเจกต์ที่เคยเบิกมา (ครั้งแรกที่ตารางว่าง) — dedupe ด้วย norm
+if (db.prepare('SELECT COUNT(*) c FROM projects').get().c === 0) {
+  const existing = db.prepare(
+    "SELECT DISTINCT project FROM wms_transactions WHERE type = 'OUTBOUND' AND project IS NOT NULL AND TRIM(project) != ''"
+  ).all();
+  const ins = db.prepare('INSERT OR IGNORE INTO projects (name, norm) VALUES (?, ?)');
+  for (const r of existing) {
+    const norm = normalizeProject(r.project);
+    if (norm) ins.run(r.project.trim(), norm);
+  }
+}
 
 // Migration: ฐานข้อมูลเดิมที่สร้างก่อนมีฟีเจอร์ "รอส่งมอบสินค้า" ยังไม่มีคอลัมน์ pickedUpAt
 const txColumns = db.prepare('PRAGMA table_info(wms_transactions)').all().map((col) => col.name);

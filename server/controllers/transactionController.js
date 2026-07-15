@@ -1,6 +1,7 @@
 import db, { logAudit } from '../db.js';
 import { broadcast } from '../events.js';
 import { sendPushToUser } from '../push.js';
+import { resolveProjectName } from './projectController.js';
 
 class ValidationError extends Error {
   constructor(message) {
@@ -127,6 +128,8 @@ export const createOutboundRequest = (req, res) => {
     if (!project || String(project).trim() === '') {
       throw new ValidationError('กรุณาระบุโปรเจกต์');
     }
+    // แปลงชื่อโปรเจกต์ที่พิมพ์เป็นชื่อ canonical (งานTAI/tai → TAI) หรือเพิ่มใหม่ถ้ายังไม่มี
+    const canonicalProject = resolveProjectName(project);
 
     const normalizedItems = items.map((item) => {
       const productId = normalizeSku(item.productId || item.sku);
@@ -166,7 +169,7 @@ export const createOutboundRequest = (req, res) => {
       const info = db.prepare(`
         INSERT INTO wms_transactions (transactionId, type, requesterUsername, project, status, requestDate)
         VALUES (?, 'OUTBOUND', ?, ?, 'Pending', ?)
-      `).run(transactionId, req.user.username, String(project).trim(), requestDate);
+      `).run(transactionId, req.user.username, canonicalProject, requestDate);
 
       const stmtItem = db.prepare(`
         INSERT INTO wms_transaction_items (tx_id, productId, sku, productName, imageUrl, groupId, groupName, requestedQty, approvedQty, status)
@@ -177,7 +180,7 @@ export const createOutboundRequest = (req, res) => {
         stmtItem.run(info.lastInsertRowid, item.productId, item.sku, item.productName, item.imageUrl, item.groupId, item.groupName, item.quantity);
       }
       logAudit(req.user.username, 'transaction.request_outbound', 'transaction', transactionId, {
-        project: String(project).trim(),
+        project: canonicalProject,
         itemCount: normalizedItems.length
       });
     })();

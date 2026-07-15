@@ -4,17 +4,26 @@ import {
   createProduct,
   deleteProduct,
   getDashboardStats,
+  getNextSku,
   getProductGroups,
   getProducts,
   permanentlyDeleteProduct,
   restoreProduct,
   updateProduct
 } from '../controllers/productController.js';
+import { addCategory, deleteCategory, mergeCategories, resequenceCategories } from '../controllers/categoryController.js';
 import { authorizeRoles, verifyAuth } from '../middleware/authMiddleware.js';
 
 const router = express.Router();
+const manager = [verifyAuth, authorizeRoles('Admin', 'Manager')];
 router.get('/products', verifyAuth, getProducts);
+router.get('/products/next-sku', verifyAuth, getNextSku);
 router.get('/product-groups', verifyAuth, getProductGroups);
+// จัดการหมวดหมู่ (Admin/Manager) — merge ต้องมาก่อน :id
+router.post('/product-groups/merge', ...manager, mergeCategories);
+router.post('/product-groups/resequence', ...manager, resequenceCategories);
+router.post('/product-groups', ...manager, addCategory);
+router.delete('/product-groups/:id', ...manager, deleteCategory);
 router.post('/products', verifyAuth, authorizeRoles('Admin', 'Manager'), createProduct);
 router.put('/products/:id', verifyAuth, authorizeRoles('Admin', 'Manager'), updateProduct);
 // Manager มีสิทธิ์จัดการสินค้าเท่า Admin ทุกอย่าง (เหลือเฉพาะจัดการผู้ใช้ที่เป็นของ Admin)

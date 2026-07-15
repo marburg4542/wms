@@ -9,6 +9,7 @@ import { isCameraScanDevice } from '../../utils/device';
 import { ListSkeleton } from '../Skeleton';
 import { useBodyScrollLock } from '../../utils/useBodyScrollLock';
 import { parseScannedCode } from '../../utils/qr';
+import { confirmDialog } from '../../utils/confirm';
 import toast from 'react-hot-toast';
 
 const PAGE_SIZE = 50; // จำนวนสินค้าต่อหน้า (แบ่งหน้าเพราะแคตตาล็อกจริงมีหลายพันตัว)
@@ -51,8 +52,17 @@ export default function Inventory() {
   const [cart, setCart] = useState([]);
   const [cartModal, setCartModal] = useState(false);
   const [reqProject, setReqProject] = useState('');
+  const [projectList, setProjectList] = useState([]);      // [{id, name}] รายชื่อโปรเจกต์
+  const [selectedProject, setSelectedProject] = useState(''); // ตัวกรอง/โปรเจกต์ปัจจุบันของการเบิก (เติมให้ตะกร้าอัตโนมัติ)
+  const [projectModal, setProjectModal] = useState(false); // modal จัดการโปรเจกต์ (เพิ่ม/ลบ)
+  const [newProjectName, setNewProjectName] = useState('');
+  const [categoryModal, setCategoryModal] = useState(false); // modal จัดการหมวดหมู่ (เพิ่ม/ลบ/ยุบ)
+  const [newCategoryName, setNewCategoryName] = useState('');
+  const [mergeFrom, setMergeFrom] = useState('');
+  const [mergeTo, setMergeTo] = useState('');
+  const isManager = ['Admin', 'Manager'].includes(currentUser.role);
 
-  useBodyScrollLock(cartModal || scanOpen); // freeze พื้นหลังตอนเปิด modal
+  useBodyScrollLock(cartModal || scanOpen || projectModal || categoryModal); // freeze พื้นหลังตอนเปิด modal
 
   // ค้นหาผ่านฝั่ง server เพื่อให้เจอสินค้าทุกตัว ไม่ติดเพดานจำนวนรายการที่โหลดมาแสดง
   // silent = รีเฟรชเบื้องหลังโดยไม่โชว์ spinner (ใช้ตอน poll อัตโนมัติ)
@@ -81,11 +91,25 @@ export default function Inventory() {
   // เปลี่ยนคำค้น/หมวดหมู่ → กลับไปหน้า 1 เสมอ (ไม่งั้นอาจค้างหน้าที่ไม่มีผลลัพธ์)
   useEffect(() => { setPage(1); }, [searchTerm, groupFilter]);
 
-  useEffect(() => {
+  const loadGroups = useCallback(() => {
     fetchApi('/api/product-groups')
       .then(json => { if (json.success) setGroups(json.groups); })
       .catch(err => console.warn('Failed to fetch groups', err));
   }, []);
+  useEffect(() => { loadGroups(); }, [loadGroups]);
+
+  // รายชื่อโปรเจกต์ (ใช้ทั้งตัวกรอง, ตะกร้า, จัดการ) — โหลดตอน mount + รีโหลดหลังเพิ่ม/ลบ
+  const loadProjects = useCallback(() => {
+    fetchApi('/api/projects')
+      .then(json => { if (json.success) setProjectList(json.projects || []); })
+      .catch(() => {});
+  }, []);
+  useEffect(() => { loadProjects(); }, [loadProjects]);
+
+  // เปิดตะกร้าแล้วยังไม่ได้กรอกโปรเจกต์ → เติมโปรเจกต์ที่เลือกไว้ในตัวกรองให้อัตโนมัติ
+  useEffect(() => {
+    if (cartModal && selectedProject && !reqProject) setReqProject(selectedProject);
+  }, [cartModal]); // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
     const timer = setTimeout(fetchProducts, 300);
@@ -166,6 +190,77 @@ export default function Inventory() {
     } catch { toast.error('เกิดข้อผิดพลาด'); }
   };
 
+  const addProjectHandler = async () => {
+    const name = newProjectName.trim();
+    if (!name) return;
+    try {
+      const j = await fetchApi('/api/projects', { method: 'POST', body: JSON.stringify({ name }) });
+      if (j.success) {
+        setNewProjectName('');
+        loadProjects();
+        toast.success(j.existed ? `มีโปรเจกต์นี้อยู่แล้ว: ${j.project.name}` : `เพิ่มโปรเจกต์ "${j.project.name}"`);
+      }
+    } catch { toast.error('เพิ่มโปรเจกต์ไม่สำเร็จ'); }
+  };
+
+  const deleteProjectHandler = async (p) => {
+    const ok = await confirmDialog({ title: 'ลบโปรเจกต์', message: `ลบโปรเจกต์ "${p.name}"?\n(ใบเบิกเดิมไม่กระทบ ชื่อยังอยู่ในประวัติ)`, confirmText: 'ลบ', danger: true });
+    if (!ok) return;
+    try {
+      const j = await fetchApi(`/api/projects/${p.id}`, { method: 'DELETE' });
+      if (j.success) { loadProjects(); if (selectedProject === p.name) setSelectedProject(''); toast.success('ลบโปรเจกต์แล้ว'); }
+    } catch { toast.error('ลบไม่สำเร็จ'); }
+  };
+
+  const addCategoryHandler = async () => {
+    const name = newCategoryName.trim();
+    if (!name) return;
+    try {
+      const j = await fetchApi('/api/product-groups', { method: 'POST', body: JSON.stringify({ name }) });
+      if (j.success) { setNewCategoryName(''); loadGroups(); toast.success(j.group?.existed ? 'มีหมวดนี้แล้ว' : `เพิ่มหมวด ${j.group.id} — ${j.group.name}`); }
+    } catch (e) { toast.error(e?.message || 'เพิ่มหมวดไม่สำเร็จ'); }
+  };
+
+  const deleteCategoryHandler = async (g) => {
+    if (g.itemCount > 0) return toast.error(`ลบไม่ได้ — มีสินค้า ${g.itemCount} รายการ (ต้องยุบก่อน)`);
+    const ok = await confirmDialog({ title: 'ลบหมวดหมู่', message: `ลบหมวด "${g.id} — ${g.name}"?`, confirmText: 'ลบ', danger: true });
+    if (!ok) return;
+    try {
+      const j = await fetchApi(`/api/product-groups/${g.id}`, { method: 'DELETE' });
+      if (j.success) { loadGroups(); toast.success('ลบหมวดแล้ว'); }
+    } catch (e) { toast.error(e?.message || 'ลบไม่สำเร็จ'); }
+  };
+
+  const resequenceCategoryHandler = async () => {
+    const hasItems = groups.some(g => g.itemCount > 0);
+    const ok = await confirmDialog({
+      title: 'จัดเรียงเลขหมวดใหม่',
+      message: `เรียงเลขหมวดให้ต่อเนื่อง (01, 02, 03, ...) ปิดช่องว่างจากการยุบ/ลบ` +
+        (hasItems ? `\n⚠️ มีสินค้าอยู่ — SKU ของหมวดที่เปลี่ยนรหัสจะถูกรันใหม่ตาม ถ้ามีป้าย QR เดิมต้องพิมพ์ใหม่` : ''),
+      confirmText: 'จัดเรียง'
+    });
+    if (!ok) return;
+    try {
+      const j = await fetchApi('/api/product-groups/resequence', { method: 'POST' });
+      if (j.success) { loadGroups(); fetchProducts(); toast.success(j.message); }
+    } catch (e) { toast.error(e?.message || 'จัดเรียงไม่สำเร็จ'); }
+  };
+
+  const mergeCategoryHandler = async () => {
+    if (!mergeFrom || !mergeTo || mergeFrom === mergeTo) return toast.error('เลือกหมวดต้นทาง/ปลายทางให้ถูกต้อง');
+    const from = groups.find(g => g.id === mergeFrom), to = groups.find(g => g.id === mergeTo);
+    const ok = await confirmDialog({
+      title: 'ยุบหมวดหมู่',
+      message: `ยุบ "${from?.id} — ${from?.name}" (${from?.itemCount || 0} รายการ) เข้ากับ "${to?.id} — ${to?.name}"?\n⚠️ สินค้าจะถูกรัน SKU ใหม่ตามหมวดปลายทาง — ถ้ามีป้าย QR เดิมต้องพิมพ์ใหม่`,
+      confirmText: 'ยุบ', danger: true
+    });
+    if (!ok) return;
+    try {
+      const j = await fetchApi('/api/product-groups/merge', { method: 'POST', body: JSON.stringify({ fromId: mergeFrom, toId: mergeTo }) });
+      if (j.success) { setMergeFrom(''); setMergeTo(''); loadGroups(); fetchProducts(); toast.success(j.message); }
+    } catch (e) { toast.error(e?.message || 'ยุบหมวดไม่สำเร็จ'); }
+  };
+
   return (
     <div className="space-y-6 animate-fade-in relative pb-20">
       <div className="flex flex-col md:flex-row justify-between items-start md:items-center gap-4 glass-panel p-5 rounded-2xl">
@@ -188,14 +283,36 @@ export default function Inventory() {
             />
             <button type="button" onClick={handleScanClick} className="btn btn-sm btn-square btn-primary shrink-0" title="สแกนบาร์โค้ด/QR" aria-label="สแกนบาร์โค้ด">📷</button>
           </div>
-          <select
-            className="select select-bordered select-sm w-full max-w-57.5 bg-base-100"
-            value={groupFilter}
-            onChange={(e) => setGroupFilter(e.target.value)}
-          >
-            <option value="">ทุกหมวดหมู่</option>
-            {groups.map(g => <option key={g.id} value={g.id}>{g.id} — {g.name}</option>)}
-          </select>
+          <div className="flex gap-2 items-center w-full sm:w-auto">
+            <select
+              className="select select-bordered select-sm w-full sm:max-w-52 bg-base-100"
+              value={groupFilter}
+              onChange={(e) => setGroupFilter(e.target.value)}
+            >
+              <option value="">ทุกหมวดหมู่</option>
+              {groups.map(g => <option key={g.id} value={g.id}>{g.id} — {g.name}</option>)}
+            </select>
+            {isManager && (
+              <button type="button" onClick={() => setCategoryModal(true)} className="btn btn-sm btn-ghost btn-square shrink-0" title="จัดการหมวดหมู่">⚙️</button>
+            )}
+          </div>
+          {/* ตัวกรอง/เลือกโปรเจกต์ปัจจุบัน (เติมให้ตะกร้าอัตโนมัติ) + ปุ่มจัดการ (Admin/Manager) */}
+          {canWithdraw && (
+            <div className="flex gap-2 items-center w-full sm:w-auto">
+              <select
+                className="select select-bordered select-sm w-full sm:w-48 bg-base-100"
+                value={selectedProject}
+                onChange={(e) => setSelectedProject(e.target.value)}
+                title="เลือกโปรเจกต์สำหรับการเบิก"
+              >
+                <option value="">เลือกโปรเจกต์</option>
+                {projectList.map(p => <option key={p.id} value={p.name}>{p.name}</option>)}
+              </select>
+              {isManager && (
+                <button type="button" onClick={() => setProjectModal(true)} className="btn btn-sm btn-ghost btn-square shrink-0" title="จัดการโปรเจกต์">⚙️</button>
+              )}
+            </div>
+          )}
         </div>
         
         {loading ? ( <ListSkeleton count={6} /> ) : (
@@ -333,8 +450,15 @@ export default function Inventory() {
             </div>
             <form onSubmit={submitCartRequest}>
               <div className="form-control mb-4">
-                <label className="label text-xs font-bold">ชื่อโปรเจกต์ / เหตุผลการเบิก</label>
-                <input type="text" required className="input input-bordered w-full" value={reqProject} onChange={e => setReqProject(e.target.value)} />
+                <label className="label text-xs font-bold">โปรเจกต์</label>
+                {/* เลือกจากรายชื่อเท่านั้น (กันสร้างชื่อซ้ำ) — เพิ่มโปรเจกต์ใหม่ได้เฉพาะผู้จัดการที่ปุ่ม ⚙️ */}
+                <select required className="select select-bordered w-full" value={reqProject} onChange={e => setReqProject(e.target.value)}>
+                  <option value="" disabled>— เลือกโปรเจกต์ —</option>
+                  {projectList.map(p => <option key={p.id} value={p.name}>{p.name}</option>)}
+                </select>
+                {projectList.length === 0 && (
+                  <span className="text-[10px] text-warning mt-1">ยังไม่มีโปรเจกต์ — ให้ผู้จัดการเพิ่มก่อน (ปุ่ม ⚙️ ด้านบน)</span>
+                )}
               </div>
               <div className="flex justify-end gap-2">
                 <button type="button" className="btn btn-ghost" onClick={() => setCartModal(false)}>ปิด</button>
@@ -356,6 +480,84 @@ export default function Inventory() {
             toast.success(fromLabel ? `สแกนป้าย: รหัสสินค้า ${searchValue}` : `สแกนได้: ${searchValue}`);
           }}
         />
+      )}
+
+      {/* จัดการโปรเจกต์ (Admin/Manager) — เพิ่ม/ลบ */}
+      {projectModal && (
+        <div className="fixed inset-0 z-100 flex items-center justify-center backdrop-blur-md p-4" onClick={() => setProjectModal(false)}>
+          <div className="glass-modal p-5 sm:p-6 rounded-2xl w-full max-w-md max-h-[85vh] overflow-y-auto" onClick={e => e.stopPropagation()}>
+            <h3 className="font-bold text-lg border-b border-base-200 pb-3 mb-4">⚙️ จัดการโปรเจกต์</h3>
+            <div className="flex gap-2 mb-4">
+              <input type="text" className="input input-bordered input-sm w-full" placeholder="ชื่อโปรเจกต์ใหม่"
+                value={newProjectName} onChange={e => setNewProjectName(e.target.value)}
+                onKeyDown={e => { if (e.key === 'Enter') { e.preventDefault(); addProjectHandler(); } }} />
+              <button className="btn btn-sm btn-primary text-white shrink-0" onClick={addProjectHandler}>เพิ่ม</button>
+            </div>
+            <div className="space-y-1 max-h-[50vh] overflow-y-auto">
+              {projectList.length === 0 ? (
+                <div className="text-center opacity-50 text-sm py-6">ยังไม่มีโปรเจกต์</div>
+              ) : projectList.map(p => (
+                <div key={p.id} className="flex items-center justify-between bg-base-200/50 rounded-lg px-3 py-2">
+                  <span className="text-sm">{p.name}</span>
+                  <button className="btn btn-ghost btn-xs text-error" onClick={() => deleteProjectHandler(p)}>ลบ</button>
+                </div>
+              ))}
+            </div>
+            <div className="flex justify-end mt-4"><button className="btn btn-ghost" onClick={() => setProjectModal(false)}>ปิด</button></div>
+          </div>
+        </div>
+      )}
+
+      {/* จัดการหมวดหมู่ (Admin/Manager) — เพิ่ม / ลบ / ยุบ */}
+      {categoryModal && (
+        <div className="fixed inset-0 z-100 flex items-center justify-center backdrop-blur-md p-4" onClick={() => setCategoryModal(false)}>
+          <div className="glass-modal p-5 sm:p-6 rounded-2xl w-full max-w-lg max-h-[85vh] overflow-y-auto" onClick={e => e.stopPropagation()}>
+            <div className="flex items-center justify-between border-b border-base-200 pb-3 mb-4">
+              <h3 className="font-bold text-lg">⚙️ จัดการหมวดหมู่</h3>
+              <button className="btn btn-xs btn-ghost text-primary gap-1" onClick={resequenceCategoryHandler} title="ปิดช่องว่างเลขหมวด ให้ต่อเนื่อง 01,02,03...">🔢 จัดเรียงเลขใหม่</button>
+            </div>
+
+            {/* เพิ่มหมวด — รหัส 2 หลักรันอัตโนมัติ */}
+            <div className="flex gap-2 mb-4">
+              <input type="text" className="input input-bordered input-sm w-full" placeholder="ชื่อหมวดหมู่ใหม่ (รหัสรันให้อัตโนมัติ)"
+                value={newCategoryName} onChange={e => setNewCategoryName(e.target.value)}
+                onKeyDown={e => { if (e.key === 'Enter') { e.preventDefault(); addCategoryHandler(); } }} />
+              <button className="btn btn-sm btn-primary text-white shrink-0" onClick={addCategoryHandler}>เพิ่ม</button>
+            </div>
+
+            {/* รายการหมวด */}
+            <div className="space-y-1 max-h-[35vh] overflow-y-auto mb-4">
+              {groups.map(g => (
+                <div key={g.id} className="flex items-center justify-between bg-base-200/50 rounded-lg px-3 py-2">
+                  <span className="text-sm"><span className="font-mono opacity-60">{g.id}</span> — {g.name} <span className="text-xs opacity-50">({g.itemCount} รายการ)</span></span>
+                  <button className="btn btn-ghost btn-xs text-error" disabled={g.itemCount > 0}
+                    title={g.itemCount > 0 ? 'มีสินค้าอยู่ ต้องยุบก่อน' : undefined}
+                    onClick={() => deleteCategoryHandler(g)}>ลบ</button>
+                </div>
+              ))}
+            </div>
+
+            {/* ยุบหมวด */}
+            <div className="border-t border-base-200 pt-4">
+              <div className="text-sm font-bold mb-2">ยุบหมวดหมู่เข้าด้วยกัน</div>
+              <div className="flex flex-wrap items-center gap-2">
+                <select className="select select-bordered select-sm flex-1 min-w-32" value={mergeFrom} onChange={e => setMergeFrom(e.target.value)}>
+                  <option value="">— ต้นทาง —</option>
+                  {groups.map(g => <option key={g.id} value={g.id}>{g.id} — {g.name} ({g.itemCount})</option>)}
+                </select>
+                <span className="opacity-60 text-sm">เข้ากับ</span>
+                <select className="select select-bordered select-sm flex-1 min-w-32" value={mergeTo} onChange={e => setMergeTo(e.target.value)}>
+                  <option value="">— ปลายทาง —</option>
+                  {groups.filter(g => g.id !== mergeFrom).map(g => <option key={g.id} value={g.id}>{g.id} — {g.name}</option>)}
+                </select>
+                <button className="btn btn-sm btn-warning text-white" onClick={mergeCategoryHandler}>ยุบ</button>
+              </div>
+              <p className="text-[10px] opacity-50 mt-1">สินค้าในหมวดต้นทางจะย้ายไปปลายทาง + รัน SKU ใหม่ตามรหัสหมวดปลายทาง</p>
+            </div>
+
+            <div className="flex justify-end mt-4"><button className="btn btn-ghost" onClick={() => setCategoryModal(false)}>ปิด</button></div>
+          </div>
+        </div>
       )}
     </div>
   );

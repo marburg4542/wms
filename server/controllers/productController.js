@@ -150,19 +150,16 @@ export const createProduct = (req, res) => {
       return res.status(400).json({ success: false, message: 'กรุณาระบุชื่อสินค้า' });
     }
 
-    // SKU ต้องขึ้นต้นด้วยรหัสหมวดหมู่เสมอ (2 หลักแรกล็อกตามหมวด)
-    if (sku && !sku.startsWith(`${groupId}-`)) {
-      return res.status(400).json({ success: false, message: `SKU ต้องขึ้นต้นด้วยรหัสหมวดหมู่ (${groupId}-)` });
+    // SKU = 5 หลัก: รหัสหมวด 2 หลัก + ลำดับ 3 หลัก (ไม่มีขีด) เช่น 02001 — 2 หลักแรกล็อกตามหมวด
+    if (sku && !sku.startsWith(groupId)) {
+      return res.status(400).json({ success: false, message: `SKU ต้องขึ้นต้นด้วยรหัสหมวดหมู่ (${groupId})` });
     }
 
-    // ไม่ระบุ SKU มา → สร้างอัตโนมัติจากรหัสหมวดหมู่ + เลขลำดับถัดไป เช่น 01-001, 01-002
+    // ไม่ระบุ SKU มา → สร้างอัตโนมัติ: รหัสหมวด + (ลำดับสูงสุดในหมวดนั้น +1) เช่น 02001, 02002
+    // นับจากสินค้าทั้งหมดในหมวด (รวมที่ปิดใช้งาน) เพื่อไม่ reuse เลขเดิม (ป้าย QR ห้ามซ้ำ)
     if (!sku) {
-      const row = db.prepare(`
-        SELECT MAX(CAST(SUBSTR(item_id, ?) AS INTEGER)) AS maxSeq
-        FROM items
-        WHERE item_id LIKE ?
-      `).get(groupId.length + 2, `${groupId}-%`);
-      sku = `${groupId}-${String((row?.maxSeq || 0) + 1).padStart(3, '0')}`;
+      const row = db.prepare('SELECT MAX(CAST(item_seq AS INTEGER)) AS maxSeq FROM items WHERE group_id = ?').get(groupId);
+      sku = `${groupId}${String((row?.maxSeq || 0) + 1).padStart(3, '0')}`;
     }
 
     const exists = db.prepare('SELECT item_id FROM items WHERE item_id = ?').get(sku);
@@ -197,10 +194,29 @@ export const createProduct = (req, res) => {
 export const getProductGroups = (req, res) => {
   try {
     // ไม่รวมกลุ่ม '00' (Default) เพราะเป็นกลุ่มระบบสำหรับ item เก่าที่ไม่ได้ระบุหมวด ไม่ให้เลือกใช้
-    const groups = db.prepare(`SELECT group_id AS id, group_name AS name FROM item_groups WHERE group_id != '00' ORDER BY group_id ASC`).all();
+    // itemCount = จำนวนสินค้าในหมวด (ใช้ตอนจัดการ: ลบได้เฉพาะหมวดที่ว่าง)
+    const groups = db.prepare(`
+      SELECT g.group_id AS id, g.group_name AS name, COUNT(i.item_id) AS itemCount
+      FROM item_groups g LEFT JOIN items i ON i.group_id = g.group_id
+      WHERE g.group_id != '00'
+      GROUP BY g.group_id ORDER BY g.group_id ASC
+    `).all();
     return res.json({ success: true, groups });
   } catch (error) {
     console.error('getProductGroups Error:', error);
+    res.status(500).json({ success: false, message: 'Database error' });
+  }
+};
+
+// SKU ถัดไปของหมวด (ไว้ให้ฟอร์มเพิ่มสินค้าแสดงตัวอย่าง) — รหัสหมวด + (ลำดับสูงสุด +1)
+export const getNextSku = (req, res) => {
+  try {
+    const groupId = String(req.query.group || '').trim();
+    if (!/^\d{2}$/.test(groupId)) return res.status(400).json({ success: false, message: 'รหัสหมวดไม่ถูกต้อง' });
+    const row = db.prepare('SELECT MAX(CAST(item_seq AS INTEGER)) AS maxSeq FROM items WHERE group_id = ?').get(groupId);
+    res.json({ success: true, sku: `${groupId}${String((row?.maxSeq || 0) + 1).padStart(3, '0')}` });
+  } catch (error) {
+    console.error('getNextSku Error:', error);
     res.status(500).json({ success: false, message: 'Database error' });
   }
 };
