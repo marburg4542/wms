@@ -9,8 +9,9 @@ export const getAssetUrl = (url) => {
 };
 
 export const fetchApi = async (endpoint, options = {}) => {
+  const { suppressErrorToast = false, ...requestOptions } = options;
   const token = sessionStorage.getItem('token');
-  const isFormData = options.body instanceof FormData;
+  const isFormData = requestOptions.body instanceof FormData;
   
   const defaultHeaders = {
     ...(!isFormData && { 'Content-Type': 'application/json' }),
@@ -19,10 +20,10 @@ export const fetchApi = async (endpoint, options = {}) => {
 
   try {
     const response = await fetch(`${API_BASE_URL}${endpoint}`, {
-      ...options,
+      ...requestOptions,
       headers: {
         ...defaultHeaders,
-        ...options.headers,
+        ...requestOptions.headers,
       },
     });
 
@@ -51,11 +52,14 @@ export const fetchApi = async (endpoint, options = {}) => {
         setTimeout(() => {
             window.location.href = '/login';
         }, 1500);
-      } else {
+      } else if (!suppressErrorToast) {
         // 🔥 แสดงข้อความ Error ที่แท้จริงจาก Backend (เช่น "ไม่พบสินค้า" หรือ "บัญชีรอผลการอนุมัติ")
         toast.error(errorMessage);
       }
-      throw new Error(`API Error: ${response.status} ${errorMessage}`);
+      const apiError = new Error(`API Error: ${response.status} ${errorMessage}`);
+      apiError.status = response.status;
+      apiError.code = errorCode;
+      throw apiError;
     }
 
     if (response.status === 204) {
@@ -65,7 +69,7 @@ export const fetchApi = async (endpoint, options = {}) => {
     return await response.json();
   } catch (error) {
     console.error(`🚨 [fetchApi] Error at ${endpoint}:`, error);
-    if (!error.message.includes('API Error')) {
+    if (!suppressErrorToast && !error.message.includes('API Error')) {
         toast.error('ไม่สามารถเชื่อมต่อกับเซิร์ฟเวอร์ได้ โปรดตรวจสอบว่า Backend เปิดทำงานอยู่หรือไม่');
     }
     throw error;

@@ -1,5 +1,8 @@
 import db, { logAudit } from '../db.js';
+import { retargetSku } from '../utils/skuRetarget.js';
+import { LocationError, setLocationQuantity } from '../utils/itemLocations.js';
 import { broadcast } from '../events.js';
+import { availableForProject, readItemStockContext } from '../utils/projectStock.js';
 
 const normalizeSku = (value) => String(value || '').trim().toUpperCase();
 const toNonNegativeInteger = (value, fallback = 0) => {
@@ -14,7 +17,10 @@ const toPositiveNumber = (value) => {
 const mapProduct = (row) => {
   const minStock = Number(row.minStock ?? 10);
   const stock = Number(row.stock ?? 0);
+  const reserved = Number(row.reserved ?? 0);   // ถูกจองให้ใบเบิกที่อนุมัติแล้วรอรับของ
   return {
+    reserved,
+    available: stock - reserved,                // ยอดที่ยังเบิกได้จริง
     id: row.id,
     sku: row.sku,
     name: row.name,
@@ -28,6 +34,12 @@ const mapProduct = (row) => {
     imageUrl: row.imageUrl || '',
     warning: row.warning || null,
     isActive: Number(row.isActive ?? 1) === 1,
+    rackId: row.rackId ?? null,
+    rackName: row.rackName || null,
+    isFloorZone: Number(row.isFloor ?? 0) === 1,   // ชั้นวางประเภท "พื้นที่วางพื้น" — ไม่ต้องแสดงเลเวล
+    storageLevel: row.storageLevel ?? null,
+    roomId: row.primaryRoomId ?? null,             // ของที่วางในห้อง/โซนโดยตรง (ไม่ได้อยู่บนชั้นวาง)
+    roomName: row.roomName || null,
     status: stock > minStock ? 'Active' : (stock > 0 ? 'Low Stock' : 'Out of Stock')
   };
 };
@@ -107,21 +119,48 @@ export const getProducts = (req, res) => {
         i.group_id AS groupId,
         wb.group_name AS groupName,
         COALESCE(wb.stock_balance, 0) AS stock,
+        COALESCE(res.reserved_qty, 0) AS reserved,
         COALESCE(ps.min_stock, 10) AS minStock,
         COALESCE(ps.image_url, '') AS imageUrl,
         COALESCE(ps.is_active, 1) AS isActive,
+        i.rack_id AS rackId,
+        r.name AS rackName,
+        r.is_floor AS isFloor,
+        i.storage_level AS storageLevel,
+        i.primary_room_id AS primaryRoomId,
+        rm.name AS roomName,
         wb.warning
       FROM items i
       LEFT JOIN warehouse_balance wb ON i.item_id = wb.item_id
       LEFT JOIN product_settings ps ON ps.item_id = i.item_id
+      LEFT JOIN storage_racks r ON r.id = i.rack_id
+      LEFT JOIN rooms rm ON rm.id = i.primary_room_id AND rm.deleted_at IS NULL
+      LEFT JOIN item_reserved res ON res.item_id = i.item_id
       WHERE ${whereSql}
       ORDER BY i.item_name COLLATE NOCASE ASC
       LIMIT @limit OFFSET @offset
     `).all({ ...params, limit, offset });
 
+    // ?project=<ชื่อโครงการ> → คำนวณยอดเบิกได้ตามโควตาพื้นที่จัดเตรียมของโครงการนั้น
+    const project = String(req.query.project || '').trim();
+    const mapped = rows.map((row) => {
+      const base = mapProduct(row);
+      const ctx = availableForProject({ ...readItemStockContext(db, row.id), project: project || null });
+      return {
+        ...base,
+        reserved: ctx.reserved,
+        available: ctx.available,
+        stagedTotal: ctx.totalStaged,          // ของที่ถูกกันให้โครงการต่างๆ รวมกัน
+        freeStock: ctx.freeStock,              // ของกลางที่ยังไม่ผูกโครงการ
+        availableSource: ctx.source,           // 'staging' = มาจากโควตาโซน | 'free' = ของกลาง
+        stagingQuota: ctx.quota
+      };
+    });
+
     return res.status(200).json({
       success: true,
-      products: rows.map(mapProduct),
+      project: project || null,
+      products: mapped,
       page,
       totalPages: Math.max(Math.ceil(totalItems / limit), 1),
       totalItems
@@ -144,6 +183,8 @@ export const createProduct = (req, res) => {
     const minStock = toNonNegativeInteger(req.body.minStock, 10);
     const latestCost = Number.isFinite(Number(req.body.latestCost)) ? Number(req.body.latestCost) : null;
     const initialStock = toPositiveNumber(req.body.initialStock);
+    const rackId = req.body.rackId ? Number(req.body.rackId) : null;         // ชั้นวางที่จัดเก็บ
+    const storageLevel = req.body.storageLevel ? Number(req.body.storageLevel) : null; // เลเวลในชั้น
     const now = new Date().toISOString();
 
     if (!name) {
@@ -175,17 +216,34 @@ export const createProduct = (req, res) => {
       `).run(sku, groupId, sku.slice(-3).padStart(3, '0'), name, unit || null, latestCost, vendor || null, now, now);
       upsertProductSettings.run(sku, minStock, imageUrl);
       if (initialStock) {
+        // ยอดตั้งต้น = lot แรกของสินค้า ราคาที่กรอกจึงเป็นราคาของ lot นี้ (ขึ้นในประวัติราคาทันที)
         db.prepare(`
-          INSERT INTO stock_in (item_id, quantity, input_date, note)
-          VALUES (?, ?, ?, ?)
-        `).run(sku, initialStock, now, 'Initial stock');
+          INSERT INTO stock_in (item_id, quantity, input_date, unit_cost, note)
+          VALUES (?, ?, ?, ?, ?)
+        `).run(sku, initialStock, now, Number.isFinite(latestCost) && latestCost > 0 ? latestCost : null, 'Initial stock');
       }
-      logAudit(req.user?.username, 'product.create', 'product', sku, { name, minStock, initialStock: initialStock || 0 });
+      // เลือกชั้นวางมาตอนสร้าง = วางสต็อกตั้งต้น "ทั้งก้อน" ไว้ตรงนั้น
+      // (ตอนสร้างยังไม่มีที่วางอื่น จำนวนจึงไม่กำกวม — ต่างจากตอนแก้ไขที่ของอาจกระจายหลายที่แล้ว)
+      // เขียนผ่าน setLocationQuantity เพื่อให้ items.rack_id ถูก sync จาก item_locations ที่เดียว
+      if (rackId && initialStock > 0) {
+        setLocationQuantity(db, {
+          itemId: sku, rackId, storageLevel, quantity: initialStock,
+          note: 'วางตอนสร้างสินค้า', createdBy: req.user?.username
+        });
+      }
+      logAudit(req.user?.username, 'product.create', 'product', sku, {
+        name, minStock, initialStock: initialStock || 0, rackId: rackId || null, storageLevel: storageLevel || null
+      });
     })();
 
     broadcast('products');
-    return res.status(201).json({ success: true, message: `สร้างสินค้าเรียบร้อย (SKU: ${sku})`, sku });
+    // เลือกชั้นไว้แต่ไม่ได้ใส่สต็อกตั้งต้น = ยังไม่มีของให้วาง ต้องบอกให้รู้ ไม่งั้นจะงงว่าทำไมผังคลังไม่ขึ้น
+    const placedNote = rackId && !initialStock
+      ? ' — ยังไม่ได้วางบนชั้น เพราะสต็อกตั้งต้นเป็น 0 (ไปวางได้ที่ผังคลังเมื่อรับของเข้าแล้ว)'
+      : '';
+    return res.status(201).json({ success: true, message: `สร้างสินค้าเรียบร้อย (SKU: ${sku})${placedNote}`, sku });
   } catch (error) {
+    if (error instanceof LocationError) return res.status(error.statusCode).json({ success: false, message: error.message });
     console.error('createProduct Error:', error);
     res.status(500).json({ success: false, message: 'Database error' });
   }
@@ -204,6 +262,28 @@ export const getProductGroups = (req, res) => {
     return res.json({ success: true, groups });
   } catch (error) {
     console.error('getProductGroups Error:', error);
+    res.status(500).json({ success: false, message: 'Database error' });
+  }
+};
+
+// ประวัติราคาต่อ lot ของสินค้า — จาก stock_in ที่มี unit_cost (เรียงตามวันที่)
+export const getPriceHistory = (req, res) => {
+  try {
+    const sku = normalizeSku(req.params.id);
+    const lots = db.prepare(`
+      SELECT stock_in_id AS id, input_date AS date, quantity AS qty, unit_cost AS unitCost, note,
+             CASE
+               WHEN note LIKE 'ปรับยอด%' THEN 'opening'
+               WHEN note = 'Initial stock' THEN 'initial'
+               ELSE 'inbound'
+             END AS kind
+      FROM stock_in
+      WHERE item_id = ? AND unit_cost IS NOT NULL
+      ORDER BY input_date ASC, stock_in_id ASC
+    `).all(sku);
+    res.json({ success: true, lots });
+  } catch (error) {
+    console.error('getPriceHistory Error:', error);
     res.status(500).json({ success: false, message: 'Database error' });
   }
 };
@@ -237,7 +317,11 @@ export const updateProduct = (req, res) => {
     const vendor = String(req.body.vendor ?? existing.vendor ?? '').trim();
     const imageUrl = String(req.body.imageUrl ?? '').trim();
     const minStock = toNonNegativeInteger(req.body.minStock, 10);
-    const latestCost = req.body.latestCost === '' || req.body.latestCost == null ? existing.latest_cost : Number(req.body.latestCost);
+    // ผู้ใช้กรอกราคามาจริงหรือเปล่า (ไม่กรอก = แก้ชื่อ/หน่วยเฉยๆ ต้องไม่ไปแตะราคาของ lot)
+    const costProvided = req.body.latestCost !== '' && req.body.latestCost != null;
+    const latestCost = costProvided ? Number(req.body.latestCost) : existing.latest_cost;
+    // ตำแหน่งจัดเก็บไม่รับจากฟอร์มนี้แล้ว — items.rack_id เป็นค่าที่ derive มาจาก item_locations
+    // ถ้าปล่อยให้ฟอร์มเขียนทับ ผังคลังจะไม่รู้เรื่องด้วย แล้วสินค้าจะค้างอยู่หน้า "ยังไม่ระบุตำแหน่ง"
     // ส่ง sku ใหม่มา = ขอเปลี่ยน SKU (ถ้าไม่ส่งหรือส่งค่าเดิม จะไม่แตะ)
     const requestedSku = normalizeSku(req.body.sku || sku);
 
@@ -259,18 +343,10 @@ export const updateProduct = (req, res) => {
       ensureGroup(groupId, groupName);
 
       if (requestedSku !== sku) {
-        // item_id เป็น primary key ที่ stock_in/stock_out/product_settings/ใบเบิกอ้างถึง
-        // เปลี่ยนด้วยวิธี: สร้างแถวใหม่ → ชี้ตารางลูกทั้งหมดไปหา SKU ใหม่ → ลบแถวเก่า (พลาดขั้นไหน rollback ทั้งชุด)
-        db.prepare(`
-          INSERT INTO items (item_id, group_id, item_seq, item_name, unit, latest_cost, is_asset, storage_type, vendor, clean_status, source_row, created_at, updated_at)
-          SELECT ?, group_id, ?, item_name, unit, latest_cost, is_asset, storage_type, vendor, clean_status, source_row, created_at, CURRENT_TIMESTAMP
-          FROM items WHERE item_id = ?
-        `).run(requestedSku, requestedSku.slice(-3).padStart(3, '0'), sku);
-        db.prepare('UPDATE product_settings SET item_id = ? WHERE item_id = ?').run(requestedSku, sku);
-        db.prepare('UPDATE stock_in SET item_id = ? WHERE item_id = ?').run(requestedSku, sku);
-        db.prepare('UPDATE stock_out SET item_id = ? WHERE item_id = ?').run(requestedSku, sku);
-        db.prepare('UPDATE wms_transaction_items SET productId = ?, sku = ? WHERE productId = ?').run(requestedSku, requestedSku, sku);
-        db.prepare('DELETE FROM items WHERE item_id = ?').run(sku);
+        // item_id เป็น primary key ที่ stock_in/stock_out/product_settings/item_locations/ใบเบิกอ้างถึง
+        // เปลี่ยน item_id ในที่เดียว แล้ว retargetSku ลากตารางลูกทุกตารางตามไป
+        // (รวม item_locations — ถ้าลืม ตำแหน่งจัดเก็บจะค้างกับรหัสเก่าแล้วสินค้าจะกลับไปอยู่หน้า "ยังไม่ระบุตำแหน่ง")
+        retargetSku(db, sku, requestedSku, requestedSku.slice(-3).padStart(3, '0'));
         logAudit(req.user?.username, 'product.rename_sku', 'product', requestedSku, { from: sku });
       }
 
@@ -280,7 +356,19 @@ export const updateProduct = (req, res) => {
         WHERE item_id = ?
       `).run(groupId, name, unit || null, Number.isFinite(latestCost) ? latestCost : null, vendor || null, requestedSku);
       upsertProductSettings.run(requestedSku, minStock, imageUrl);
-      logAudit(req.user?.username, 'product.update', 'product', requestedSku, { name, minStock });
+
+      // ราคาในฟอร์มแก้ไข = ราคาของ "lot แรก" ของสินค้าตัวนั้น
+      // เขียนทับลงแถวรับเข้าที่เก่าที่สุด ไม่สร้างแถวใหม่ ยอดคงเหลือจึงไม่ขยับ
+      // (สินค้าที่ยังไม่เคยมีรายการรับเข้าเลยจะยังไม่มีประวัติราคา จนกว่าจะรับของเข้าครั้งแรก)
+      // ราคา 0 ถือว่า "ยังไม่ได้กรอก" ไม่ใช่ "ของฟรี" — ไม่งั้นสินค้าที่ยังไม่ลงราคา
+      // จะได้ lot ราคา ฿0 ติดมาเต็มไปหมด แล้วกราฟกับค่าเฉลี่ยจะเพี้ยน
+      if (costProvided && Number.isFinite(latestCost) && latestCost > 0) {
+        const firstLot = db.prepare(
+          'SELECT stock_in_id FROM stock_in WHERE item_id = ? ORDER BY input_date ASC, stock_in_id ASC LIMIT 1'
+        ).get(requestedSku);
+        if (firstLot) db.prepare('UPDATE stock_in SET unit_cost = ? WHERE stock_in_id = ?').run(latestCost, firstLot.stock_in_id);
+      }
+      logAudit(req.user?.username, 'product.update', 'product', requestedSku, { name, minStock, latestCost: costProvided ? latestCost : undefined });
     })();
 
     broadcast('products');

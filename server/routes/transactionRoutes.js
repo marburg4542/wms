@@ -1,6 +1,7 @@
 import express from 'express';
 import {
   adjustStock,
+  cancelReservation,
   cancelTransaction,
   createInboundTransaction,
   createOutboundRequest,
@@ -22,5 +23,7 @@ router.get('/transactions/history', verifyAuth, getHistory);
 router.put('/transactions/:id/resolve', verifyAuth, authorizeRoles('Admin', 'Manager'), resolveTransaction);
 router.put('/transactions/:id/pickup', verifyAuth, authorizeRoles('Admin', 'Manager'), markPickedUp);
 router.put('/transactions/:id/cancel', verifyAuth, authorizeRoles('Admin', 'Manager', 'Operator'), cancelTransaction);
+// ยกเลิกการจองของใบที่อนุมัติแล้วแต่ไม่มีคนมารับ — คืนของเข้าสต็อก ต้องระบุเหตุผล
+router.put('/transactions/:id/cancel-reservation', verifyAuth, authorizeRoles('Admin', 'Manager'), cancelReservation);
 
 export default router;

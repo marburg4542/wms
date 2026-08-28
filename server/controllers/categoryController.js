@@ -1,4 +1,5 @@
 import db, { logAudit } from '../db.js';
+import { retargetSku } from '../utils/skuRetarget.js';
 
 // รหัสหมวดถัดไป = เลขหมวดสูงสุด +1 (2 หลัก) เช่นมีถึง 23 → 24
 const nextGroupId = () => {
@@ -83,6 +84,62 @@ export const resequenceCategories = (req, res) => {
     res.json({ success: true, message: `จัดเรียงเลขหมวดใหม่แล้ว (${changed} หมวดเปลี่ยนรหัส)`, changed });
   } catch (err) {
     console.error('resequenceCategories error:', err);
+    try { db.pragma('foreign_keys = ON'); } catch { /* ignore */ }
+    res.status(500).json({ success: false, message: 'Database error' });
+  }
+};
+
+// จัดเรียงเลขรัน SKU ใหม่ให้ต่อเนื่องภายในแต่ละหมวด (ปิดช่องว่างที่เกิดจากการลบ/ย้ายสินค้าออก)
+// รหัสหมวด 2 หลักหน้าคงเดิม เปลี่ยนเฉพาะลำดับ 3 หลักท้าย → 001, 002, 003, ...
+// ระบุ groupId มาเพื่อจัดเรียงเฉพาะหมวดเดียวได้ ไม่ระบุ = ทุกหมวด
+export const resequenceSkus = (req, res) => {
+  try {
+    const onlyGroup = req.body?.groupId ? String(req.body.groupId).trim() : null;
+    const groups = onlyGroup
+      ? db.prepare('SELECT group_id FROM item_groups WHERE group_id = ?').all(onlyGroup)
+      : db.prepare('SELECT group_id FROM item_groups ORDER BY group_id').all();
+    if (onlyGroup && groups.length === 0) return res.status(404).json({ success: false, message: 'ไม่พบหมวดหมู่' });
+
+    // วางแผน oldSku → newSku ของทุกหมวดให้ครบก่อน แล้วค่อยลงมือเปลี่ยนทีเดียว
+    const plan = [];
+    for (const g of groups) {
+      const items = db.prepare(
+        'SELECT item_id, item_seq FROM items WHERE group_id = ? ORDER BY CAST(item_seq AS INTEGER), item_id'
+      ).all(g.group_id);
+      if (items.length > 999) {
+        return res.status(400).json({ success: false, message: `หมวด ${g.group_id} มีสินค้า ${items.length} รายการ — เกินเพดานเลขรัน 3 หลัก จัดเรียงอัตโนมัติไม่ได้` });
+      }
+      items.forEach((it, index) => {
+        const seq3 = String(index + 1).padStart(3, '0');
+        const newSku = `${g.group_id}${seq3}`;
+        // ข้ามเฉพาะตัวที่ถูกต้องครบทั้ง SKU และลำดับแล้วเท่านั้น
+        // (เช็คแค่ item_seq ไม่พอ — ข้อมูลเก่าบางแถว prefix ของ SKU ไม่ตรงกับ group_id
+        //  ถ้าปล่อยไว้ SKU นั้นจะไปชนกับปลายทางของสินค้าอีกตัวที่กำลังย้าย)
+        if (it.item_id === newSku && it.item_seq === seq3) return;
+        plan.push({ oldSku: it.item_id, newSku, seq3 });
+      });
+    }
+
+    if (plan.length === 0) return res.json({ success: true, message: 'รหัสสินค้าเรียงต่อเนื่องดีอยู่แล้ว', changed: 0 });
+
+    // เปลี่ยน item_id (PK) พร้อมลากทุกตารางที่อ้างถึงไปด้วย
+    const move = (fromSku, toSku, seq3) => retargetSku(db, fromSku, toSku, seq3);
+
+    // ปิด FK ชั่วคราวเพราะกำลังเปลี่ยน PK ที่มีตารางลูกอ้างถึง — ทำใน transaction เดียว
+    db.pragma('foreign_keys = OFF');
+    const run = db.transaction(() => {
+      // 2 เฟส: ย้ายไปรหัสชั่วคราว (~n ไม่มีทางชนกับ SKU ตัวเลข) ก่อน แล้วค่อยลงรหัสจริง
+      // ถ้าย้ายทีเดียวจะชนกับ SKU ปลายทางที่เจ้าของเดิมยังไม่ได้ย้ายออก
+      plan.forEach((p, i) => move(p.oldSku, `~${i}`, p.seq3));
+      plan.forEach((p, i) => move(`~${i}`, p.newSku, p.seq3));
+      logAudit(req.user?.username, 'product.resequence_sku', 'product', null, { changed: plan.length, groupId: onlyGroup });
+    });
+    run();
+    db.pragma('foreign_keys = ON');
+
+    res.json({ success: true, message: `จัดเรียงรหัสสินค้าใหม่แล้ว (${plan.length} รายการเปลี่ยนรหัส)`, changed: plan.length });
+  } catch (err) {
+    console.error('resequenceSkus error:', err);
     try { db.pragma('foreign_keys = ON'); } catch { /* ignore */ }
     res.status(500).json({ success: false, message: 'Database error' });
   }

@@ -1,9 +1,9 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
-import { useSearchParams } from 'react-router-dom';
+import { Link, useSearchParams } from 'react-router-dom';
 import toast from 'react-hot-toast';
 import { fetchApi, getAssetUrl } from '../../utils/api';
 import { parseCsv, toCsv } from '../../utils/csv';
-import { stockStatusLabel } from '../../utils/labels';
+import { locationLabel, stockStatusLabel } from '../../utils/labels';
 import { onServerEvent } from '../../utils/events';
 import BarcodeScanner from '../BarcodeScanner';
 import { isCameraScanDevice } from '../../utils/device';
@@ -14,10 +14,13 @@ const PAGE_SIZE = 50; // จำนวนสินค้าต่อหน้า 
 import { ProductCardSkeleton } from '../Skeleton';
 import { useBodyScrollLock } from '../../utils/useBodyScrollLock';
 
+const nf = (n) => Number(n || 0).toLocaleString();
+
 const emptyInboundForm = {
   sku: '',
   name: '',
   quantity: '',
+  unitCost: '',
   minStock: 10,
   note: ''
 };
@@ -32,7 +35,9 @@ const emptyProductForm = {
   latestCost: '',
   minStock: 10,
   imageUrl: '',
-  initialStock: ''
+  initialStock: '',
+  rackId: '',
+  storageLevel: ''
 };
 
 const imageFallback = "data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSIxNjAiIGhlaWdodD0iMTIwIj48cmVjdCB3aWR0aD0iMTYwIiBoZWlnaHQ9IjEyMCIgZmlsbD0iI2YzZjRmNiIvPjx0ZXh0IHg9IjUwJSIgeT0iNTAlIiBmb250LXNpemU9IjE0IiB0ZXh0LWFuY2hvcj0ibWlkZGxlIiBhbGlnbm1lbnQtYmFzZWxpbmU9Im1pZGRsZSIgZm9udC1mYW1pbHk9InNhbnMtc2VyaWYiIGZpbGw9IiM5YjliOWIiPk5vIEltYWdlPC90ZXh0Pjwvc3ZnPg==";
@@ -48,6 +53,7 @@ export default function Products() {
   const [loading, setLoading] = useState(true);
   const [searchTerm, setSearchTerm] = useState('');
   const [groups, setGroups] = useState([]);
+  const [racks, setRacks] = useState([]);
   const [groupFilter, setGroupFilter] = useState('');
   // มุมมอง "ที่ปิดใช้งาน" — แสดงเฉพาะสินค้าที่ถูก archive ไว้ สำหรับคืนสถานะหรือลบถาวร
   const [showInactive, setShowInactive] = useState(false);
@@ -71,6 +77,8 @@ export default function Products() {
   const [inboundForm, setInboundForm] = useState(emptyInboundForm);
   const [adjustModal, setAdjustModal] = useState(false);
   const [adjustForm, setAdjustForm] = useState({ sku: '', name: '', currentStock: 0, countedQty: '', note: '' });
+  const [adjustLocations, setAdjustLocations] = useState([]);   // ของตัวนี้วางอยู่ที่ไหนบ้าง
+  const [adjustCuts, setAdjustCuts] = useState({});             // locationId -> จำนวนที่หายไปจากที่นั้น
   const [productModal, setProductModal] = useState(false);
   const [editingSku, setEditingSku] = useState(null);
   const [productForm, setProductForm] = useState(emptyProductForm);
@@ -90,7 +98,10 @@ export default function Products() {
       .then(j => { if (j.success) setNextSkuPreview(j.sku); })
       .catch(() => setNextSkuPreview(''));
   }, [productModal, editingSku, productForm.groupId]);
-  useBodyScrollLock(productModal || inboundModal || adjustModal || scanOpen); // freeze พื้นหลังตอนเปิด modal
+  const [priceHistory, setPriceHistory] = useState(null); // { sku, name } | null
+  const [priceLots, setPriceLots] = useState([]);
+  const [editLocations, setEditLocations] = useState(null);  // ตำแหน่งจริงจากผังคลัง (ตอนแก้ไขสินค้า)
+  useBodyScrollLock(productModal || inboundModal || adjustModal || scanOpen || !!priceHistory); // freeze พื้นหลังตอนเปิด modal
 
   // silent = รีเฟรชเบื้องหลังโดยไม่โชว์ spinner (ใช้ตอน poll อัตโนมัติ)
   const fetchProducts = useCallback(async ({ silent = false } = {}) => {
@@ -125,6 +136,9 @@ export default function Products() {
     fetchApi('/api/product-groups')
       .then(json => { if (json.success) setGroups(json.groups); })
       .catch(err => console.error('Fetch groups error:', err));
+    fetchApi('/api/racks')
+      .then(json => { if (json.success) setRacks(json.racks); })
+      .catch(() => {});
   }, []);
 
   // debounce กันยิง request ทุกตัวอักษรที่พิมพ์ค้นหา
@@ -151,16 +165,32 @@ export default function Products() {
       sku: product.sku,
       name: product.name,
       quantity: '',
+      unitCost: '',
       minStock: product.minStock || 10,
       note: ''
     } : emptyInboundForm);
     setInboundModal(true);
   };
 
+  const openPriceHistory = async (product) => {
+    setPriceHistory({ sku: product.sku, name: product.name });
+    setPriceLots([]);
+    try {
+      const j = await fetchApi(`/api/products/${encodeURIComponent(product.sku)}/price-history`);
+      if (j.success) setPriceLots(j.lots || []);
+    } catch { /* ignore */ }
+  };
+
   const openAdjustModal = (product) => {
     // เติมยอดปัจจุบันไว้ให้ ผู้ใช้แก้เป็นจำนวนที่นับได้จริง (ถ้าไม่เปลี่ยน = ไม่ปรับ)
     setAdjustForm({ sku: product.sku, name: product.name, currentStock: product.stock, countedQty: String(product.stock), note: '' });
+    setAdjustLocations([]);
+    setAdjustCuts({});
     setAdjustModal(true);
+    // ถ้านับได้น้อยกว่าที่วางไว้ ต้องรู้ก่อนว่าของหายจากชั้นไหน จึงดึงตำแหน่งมาเตรียมไว้เลย
+    fetchApi(`/api/storage-map/locations/${encodeURIComponent(product.sku)}`)
+      .then((result) => { if (result.success) setAdjustLocations(result.locations.filter(l => Number(l.quantity) > 0)); })
+      .catch(() => {});
   };
 
   const openProductModal = (product = null) => {
@@ -179,11 +209,19 @@ export default function Products() {
         latestCost: product.latestCost ?? '',
         minStock: product.minStock ?? 10,
         imageUrl: product.imageUrl || '',
-        initialStock: ''
+        initialStock: '',
+        rackId: product.rackId ? String(product.rackId) : '',
+        storageLevel: product.storageLevel ? String(product.storageLevel) : ''
       });
       setImagePreview(product.imageUrl ? getAssetUrl(product.imageUrl) : '');
+      // ตำแหน่งจัดเก็บแก้จากฟอร์มนี้ไม่ได้แล้ว ดึงของจริงจากผังคลังมาแสดงให้ดูเฉยๆ
+      setEditLocations(null);
+      fetchApi(`/api/storage-map/locations/${encodeURIComponent(product.sku)}`)
+        .then((result) => { if (result.success) setEditLocations(result); })
+        .catch(() => {});
     } else {
       setEditingSku(null);
+      setEditLocations(null);
       setProductForm({ ...emptyProductForm, groupId: firstGroup?.id || '01', groupName: firstGroup?.name || '' });
       setImagePreview('');
     }
@@ -194,8 +232,11 @@ export default function Products() {
   const handleImageChange = (event) => {
     const file = event.target.files?.[0];
     if (!file) return;
+    if (!file.type.startsWith('image/')) { toast.error('กรุณาเลือกไฟล์รูปภาพ'); return; }
+    if (file.size > 5 * 1024 * 1024) { toast.error('ไฟล์รูปใหญ่เกิน 5MB'); return; }
     setImageFile(file);
     setImagePreview(URL.createObjectURL(file));
+    event.target.value = ''; // ล้างค่า เผื่อเลือกไฟล์เดิมซ้ำ/สลับปุ่มกล้อง-อัลบั้ม
   };
 
   const submitInbound = async (event) => {
@@ -211,6 +252,7 @@ export default function Products() {
           sku: inboundForm.sku,
           name: inboundForm.name,
           quantity: Number(inboundForm.quantity),
+          unitCost: inboundForm.unitCost === '' ? null : Number(inboundForm.unitCost),
           minStock: Number(inboundForm.minStock) || 10,
           note: inboundForm.note
         })
@@ -236,10 +278,25 @@ export default function Products() {
 
     setSubmitting(true);
     try {
+      const deductions = Object.entries(adjustCuts)
+        .map(([locationId, quantity]) => ({ locationId: Number(locationId), quantity: Number(quantity) || 0 }))
+        .filter((entry) => entry.quantity > 0);
       const json = await fetchApi('/api/transactions/adjust', {
         method: 'POST',
-        body: JSON.stringify({ sku: adjustForm.sku, countedQty: counted, note: adjustForm.note })
+        body: JSON.stringify({
+          sku: adjustForm.sku,
+          countedQty: counted,
+          note: adjustForm.note,
+          ...(deductions.length ? { deductions } : {})
+        })
       });
+      if (json.needsLocationChoice) {
+        setAdjustLocations(json.locations.map((loc) => ({
+          id: loc.locationId, rackName: loc.place, storageLevel: loc.storageLevel, quantity: loc.quantity
+        })));
+        toast.error(`ของวางอยู่หลายที่ — ระบุก่อนว่าหายไปจากที่ไหนรวม ${json.excess} ชิ้น`);
+        return;
+      }
       if (json.success) {
         toast.success(json.adjusted ? json.message : 'ยอดตรงกับระบบอยู่แล้ว ไม่มีการเปลี่ยนแปลง');
         setAdjustModal(false);
@@ -403,6 +460,28 @@ export default function Products() {
     }
   };
 
+  // ปิดช่องว่างของเลขรัน SKU (เกิดจากการลบ/ย้ายสินค้าออก) ให้กลับมาต่อเนื่อง 001, 002, 003...
+  // เปลี่ยนรหัสจริงในฐานข้อมูล จึงต้องเตือนเรื่องป้าย QR เดิมก่อนเสมอ
+  const resequenceSkusHandler = async () => {
+    const ok = await confirmDialog({
+      title: 'จัดเรียงรหัสสินค้าใหม่',
+      message: 'เรียงเลขรัน SKU ในทุกหมวดให้ต่อเนื่อง (001, 002, 003, ...) ปิดช่องว่างที่เกิดจากการลบ/ย้ายสินค้า\n' +
+        '⚠️ รหัสสินค้าจะเปลี่ยนจริง — ถ้ามีป้าย QR/บาร์โค้ดที่พิมพ์ไว้แล้วต้องพิมพ์ใหม่\n' +
+        '(ประวัติรับเข้า/เบิกออก และใบเบิกเดิมจะถูกอัปเดตให้ตามอัตโนมัติ)',
+      confirmText: 'จัดเรียง'
+    });
+    if (!ok) return;
+    try {
+      const json = await fetchApi('/api/products/resequence-skus', { method: 'POST' });
+      if (json.success) {
+        toast.success(json.message);
+        await fetchProducts();
+      }
+    } catch (err) {
+      toast.error(err?.message || 'จัดเรียงรหัสสินค้าไม่สำเร็จ');
+    }
+  };
+
   // ตัวกรองมุมมอง 3 อัน (สต็อกต่ำ / คลาดเคลื่อน / ที่ปิดใช้งาน) เปิดได้ทีละ 1 อันเท่านั้น — เปิดอันใหม่ปิดที่เหลืออัตโนมัติ
   const clearLowStock = () => {
     if (!lowStockOnly) return;
@@ -446,6 +525,7 @@ export default function Products() {
           <p className="text-sm text-base-content/60 mt-1">จัดการ ข้อมูลหลัก, สต็อกขั้นต่ำ, การนำเข้า/ส่งออกไฟล์ CSV และบันทึกรับเข้า</p>
         </div>
         <div className="flex flex-wrap gap-2">
+          <button className="btn btn-ghost btn-sm text-primary" onClick={resequenceSkusHandler} title="ปิดช่องว่างของเลขรัน SKU ให้ต่อเนื่อง 001, 002, 003...">🔢 จัดเรียง SKU</button>
           <button className="btn btn-ghost btn-sm" onClick={exportProducts} disabled={products.length === 0}>นำออก CSV</button>
           <button className="btn btn-ghost btn-sm" onClick={() => importInputRef.current?.click()}>นำเข้า CSV</button>
           <button className="btn btn-primary btn-sm shadow-md" onClick={() => openProductModal()}>เพิ่มสินค้า</button>
@@ -517,12 +597,14 @@ export default function Products() {
                   <span>หน่วย: {item.unit || '-'}</span>
                   <span className="col-span-2 truncate">หมวด: {item.groupId} — {item.groupName || 'ทั่วไป'}</span>
                   <span className="col-span-2 truncate">ผู้ขาย: {item.vendor || '-'}</span>
+                  <span className="col-span-2 truncate">📍 ตำแหน่ง: {locationLabel(item) || '-'}</span>
                 </div>
                 <div className="card-actions justify-end mt-4 pt-4 border-t border-base-200">
                   {item.isActive ? (
                     <>
                       <button className="btn btn-ghost btn-sm text-primary" onClick={() => openProductModal(item)}>แก้ไข</button>
                       <button className="btn btn-ghost btn-sm text-success" onClick={() => openInboundModal(item)}>รับเข้า</button>
+                      <button className="btn btn-ghost btn-sm text-info" onClick={() => openPriceHistory(item)}>💵 ราคา</button>
                       <button className="btn btn-ghost btn-sm text-warning" onClick={() => openAdjustModal(item)}>ปรับยอด</button>
                       {canArchive && <button className="btn btn-ghost btn-sm text-error" onClick={() => archiveProduct(item)}>ปิดใช้งาน</button>}
                     </>
@@ -617,6 +699,65 @@ export default function Products() {
                   <span className="label-text text-xs font-bold">ราคาล่าสุด</span>
                   <input type="number" min="0" step="0.01" className="input input-bordered" value={productForm.latestCost} onChange={(e) => setProductForm({ ...productForm, latestCost: e.target.value })} />
                 </label>
+                {/* ตอนสร้าง: เลือกที่วางได้ ระบบจะวางสต็อกตั้งต้นทั้งก้อนไว้ตรงนั้น (จำนวนไม่กำกวมเพราะยังไม่มีที่วางอื่น)
+                    ตอนแก้ไข: อ่านอย่างเดียว เพราะของอาจกระจายอยู่หลายที่แล้ว ต้องไปจัดการที่ผังคลัง */}
+                {!editingSku ? (
+                  <>
+                    <label className="form-control">
+                      <span className="label-text text-xs font-bold">ชั้นวาง (ตำแหน่งจัดเก็บ)</span>
+                      <select className="select select-bordered" value={productForm.rackId}
+                        onChange={(e) => setProductForm({ ...productForm, rackId: e.target.value, storageLevel: '' })}>
+                        <option value="">— ไม่ระบุ —</option>
+                        {racks.map(r => <option key={r.id} value={r.id}>{r.roomName ? `${r.roomName} / ${r.name}` : `${r.planName || 'ผัง'} · ${r.name}`}</option>)}
+                      </select>
+                    </label>
+                    <label className="form-control">
+                      <span className="label-text text-xs font-bold">เลเวล</span>
+                      <select className="select select-bordered" value={productForm.storageLevel} disabled={!productForm.rackId}
+                        onChange={(e) => setProductForm({ ...productForm, storageLevel: e.target.value })}>
+                        <option value="">— เลือกเลเวล —</option>
+                        {Array.from({ length: racks.find(r => String(r.id) === String(productForm.rackId))?.levels || 0 }, (_, i) => (
+                          <option key={i + 1} value={i + 1}>เลเวล {i + 1}</option>
+                        ))}
+                      </select>
+                    </label>
+                    {productForm.rackId && (
+                      <p className="sm:col-span-2 -mt-1 text-[11px] text-base-content/60">
+                        📦 ระบบจะวางสต็อกตั้งต้นทั้งหมดไว้ที่ตำแหน่งนี้ให้เลย (ถ้าสต็อกตั้งต้นเป็น 0 จะยังไม่วาง)
+                      </p>
+                    )}
+                  </>
+                ) : (
+                  <div className="form-control sm:col-span-2">
+                    <span className="label-text text-xs font-bold">ตำแหน่งจัดเก็บ</span>
+                    <div className="mt-1 rounded-xl border border-base-300 bg-base-200/40 p-3">
+                      {editLocations === null ? (
+                        <span className="text-xs opacity-50">กำลังโหลด…</span>
+                      ) : editLocations.locations?.length ? (
+                        <div className="flex flex-wrap gap-1.5">
+                          {editLocations.locations.map(loc => (
+                            <span key={loc.id} className="badge badge-ghost gap-1 py-3">
+                              📍 {loc.rackName || loc.roomName}{loc.storageLevel ? ` · เลเวล ${loc.storageLevel}` : ''}
+                              <b className="font-mono">{loc.quantity}</b>
+                            </span>
+                          ))}
+                          {editLocations.unplaced > 0 && (
+                            <span className="badge badge-warning gap-1 py-3">ยังไม่ระบุตำแหน่ง <b className="font-mono">{editLocations.unplaced}</b></span>
+                          )}
+                        </div>
+                      ) : (
+                        <span className="text-xs opacity-60">ยังไม่ได้ระบุตำแหน่ง — คงเหลือ {editLocations.stock ?? 0} ชิ้น</span>
+                      )}
+                      <Link
+                        to={`/storage?highlight=${encodeURIComponent(editingSku)}`}
+                        className="btn btn-xs btn-outline mt-2"
+                        onClick={() => setProductModal(false)}
+                      >
+                        จัดการตำแหน่งในผังคลัง →
+                      </Link>
+                    </div>
+                  </div>
+                )}
                 {!editingSku && (
                   <label className="form-control">
                     <span className="label-text text-xs font-bold">สต็อกเริ่มต้น</span>
@@ -631,14 +772,23 @@ export default function Products() {
                       alt="preview"
                       className="w-16 h-16 rounded-lg object-cover border border-base-300 bg-white shrink-0"
                     />
-                    <input
-                      type="file"
-                      accept="image/png,image/jpeg,image/webp"
-                      className="file-input file-input-bordered w-full"
-                      onChange={handleImageChange}
-                    />
+                    <div className="flex flex-col gap-2 w-full min-w-0">
+                      <div className="flex gap-2">
+                        {/* ถ่ายรูป — เปิดกล้องหลังโดยตรงบนมือถือ (capture) */}
+                        <label className="btn btn-sm btn-outline flex-1 cursor-pointer gap-1">
+                          📷 ถ่ายรูป
+                          <input type="file" accept="image/*" capture="environment" className="hidden" onChange={handleImageChange} />
+                        </label>
+                        {/* เลือกจากอัลบั้ม/ไฟล์ — ไม่มี capture ให้เลือกเอง */}
+                        <label className="btn btn-sm btn-outline flex-1 cursor-pointer gap-1">
+                          🖼️ เลือกจากอัลบั้ม
+                          <input type="file" accept="image/*" className="hidden" onChange={handleImageChange} />
+                        </label>
+                      </div>
+                      {imageFile && <span className="text-xs text-success truncate">✅ {imageFile.name}</span>}
+                    </div>
                   </div>
-                  <span className="label-text-alt opacity-60 mt-1">รองรับ JPG, PNG, WEBP ขนาดไม่เกิน 5MB</span>
+                  <span className="label-text-alt opacity-60 mt-1">ถ่ายสดหรือเลือกจากเครื่อง · JPG, PNG, WEBP ไม่เกิน 5MB</span>
                 </label>
               </div>
               <div className="flex justify-end gap-3 pt-4 border-t border-base-200">
@@ -663,6 +813,7 @@ export default function Products() {
               <input type="text" placeholder="ชื่ออะไหล่" className="input input-bordered w-full" value={inboundForm.name} onChange={e => setInboundForm({ ...inboundForm, name: e.target.value })} required />
               <div className="grid grid-cols-2 gap-3">
                 <input type="number" min="1" placeholder="จำนวนรับเข้า" className="input input-bordered w-full" value={inboundForm.quantity} onChange={e => setInboundForm({ ...inboundForm, quantity: e.target.value })} required />
+                <input type="number" min="0" step="0.01" placeholder="ราคา/หน่วย (lot นี้)" className="input input-bordered w-full" value={inboundForm.unitCost} onChange={e => setInboundForm({ ...inboundForm, unitCost: e.target.value })} />
                 <input type="number" min="0" placeholder="ขั้นต่ำ" className="input input-bordered w-full" value={inboundForm.minStock} onChange={e => setInboundForm({ ...inboundForm, minStock: e.target.value })} />
               </div>
               <textarea className="textarea textarea-bordered h-20 w-full" value={inboundForm.note} onChange={(e) => setInboundForm({ ...inboundForm, note: e.target.value })} placeholder="เลขใบส่งของ / ผู้ส่งมอบ / หมายเหตุ"></textarea>
@@ -677,6 +828,83 @@ export default function Products() {
           </div>
         </div>
       )}
+
+      {priceHistory && (() => {
+        const costs = priceLots.map(l => Number(l.unitCost));
+        const min = costs.length ? Math.min(...costs) : 0;
+        const max = costs.length ? Math.max(...costs) : 0;
+        const latest = costs.length ? costs[costs.length - 1] : 0;
+        const avg = costs.length ? costs.reduce((s, c) => s + c, 0) / costs.length : 0;
+        const prev = costs.length > 1 ? costs[costs.length - 2] : null;
+        const trend = prev == null ? null : latest > prev ? 'up' : latest < prev ? 'down' : 'same';
+        // sparkline
+        const W = 320, H = 60, PAD = 4;
+        const spark = () => {
+          if (costs.length < 2) return null;
+          const range = max - min || 1;
+          const pts = costs.map((c, i) => {
+            const x = PAD + (i / (costs.length - 1)) * (W - 2 * PAD);
+            const y = PAD + (1 - (c - min) / range) * (H - 2 * PAD);
+            return `${x.toFixed(1)},${y.toFixed(1)}`;
+          });
+          return (
+            <svg viewBox={`0 0 ${W} ${H}`} className="w-full h-16">
+              <polyline points={pts.join(' ')} fill="none" className="stroke-info" strokeWidth="2" />
+              {costs.map((c, i) => { const [x, y] = pts[i].split(','); return <circle key={i} cx={x} cy={y} r="2.5" className="fill-info" />; })}
+            </svg>
+          );
+        };
+        return (
+          <div className="fixed inset-0 z-100 flex items-center justify-center backdrop-blur-md p-4" onClick={() => setPriceHistory(null)}>
+            <div className="glass-modal w-full max-w-lg p-5 sm:p-6 rounded-2xl max-h-[85vh] overflow-y-auto" onClick={e => e.stopPropagation()}>
+              <h3 className="font-bold text-lg border-b border-base-200 pb-3 mb-1 flex items-center gap-2">💵 ประวัติราคาต่อ lot</h3>
+              <p className="text-xs text-base-content/60 mb-4"><span className="font-mono">{priceHistory.sku}</span> · {priceHistory.name}</p>
+              {priceLots.length === 0 ? (
+                <div className="text-center py-10 opacity-50 text-sm">ยังไม่มีประวัติราคา — บันทึกราคาตอน "รับเข้า" สินค้า</div>
+              ) : (
+                <>
+                  <div className="grid grid-cols-4 gap-2 mb-3 text-center">
+                    <div className="bg-base-200/50 rounded-lg p-2"><div className="text-[10px] opacity-60">ต่ำสุด</div><div className="font-bold text-success">฿{nf(min)}</div></div>
+                    <div className="bg-base-200/50 rounded-lg p-2"><div className="text-[10px] opacity-60">สูงสุด</div><div className="font-bold text-error">฿{nf(max)}</div></div>
+                    <div className="bg-base-200/50 rounded-lg p-2"><div className="text-[10px] opacity-60">เฉลี่ย</div><div className="font-bold">฿{nf(Math.round(avg * 100) / 100)}</div></div>
+                    <div className="bg-base-200/50 rounded-lg p-2"><div className="text-[10px] opacity-60">ล่าสุด</div><div className="font-bold text-primary">฿{nf(latest)} {trend === 'up' ? '🔺' : trend === 'down' ? '🔻' : ''}</div></div>
+                  </div>
+                  {spark()}
+                  <div className="overflow-x-auto mt-3">
+                    <table className="table table-sm">
+                      <thead><tr><th>วันที่</th><th className="text-right">จำนวน</th><th className="text-right">ราคา/หน่วย</th></tr></thead>
+                      <tbody>
+                        {[...priceLots].reverse().map(l => (
+                          <tr key={l.id}>
+                            <td className="text-xs">
+                              {new Date(l.date).toLocaleDateString('th-TH')}
+                              {/* lot ที่ไม่ได้มาจากการรับของเข้าจริง ต้องบอกให้ชัด ไม่งั้นจะอ่านวันที่ผิดความหมาย */}
+                              {l.kind === 'opening' && (
+                                <span className="badge badge-ghost badge-xs ml-1 align-middle" title="ราคาที่ผูกกับยอดที่ยกมาตอนเริ่มใช้ระบบ ไม่ใช่วันที่ซื้อจริง">ยอดยกมา</span>
+                              )}
+                              {l.kind === 'initial' && (
+                                <span className="badge badge-ghost badge-xs ml-1 align-middle" title="ยอดตั้งต้นตอนสร้างสินค้า">ยอดตั้งต้น</span>
+                              )}
+                            </td>
+                            <td className="text-right">{nf(l.qty)}</td>
+                            <td className="text-right font-semibold">฿{nf(l.unitCost)}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                </>
+              )}
+              {priceLots.some(l => l.kind !== 'inbound') && (
+                <p className="mt-3 text-[11px] text-base-content/60">
+                  ป้าย <span className="badge badge-ghost badge-xs align-middle">ยอดยกมา</span> / <span className="badge badge-ghost badge-xs align-middle">ยอดตั้งต้น</span> = ราคาที่ผูกกับของที่มีอยู่ก่อนเริ่มใช้ระบบ วันที่จึงเป็นวันที่บันทึกเข้าระบบ ไม่ใช่วันที่ซื้อจริง
+                </p>
+              )}
+              <div className="flex justify-end mt-4"><button className="btn btn-ghost" onClick={() => setPriceHistory(null)}>ปิด</button></div>
+            </div>
+          </div>
+        );
+      })()}
 
       {adjustModal && (
         <div className="fixed inset-0 z-100 flex items-center justify-center backdrop-blur-md p-4">
@@ -699,6 +927,51 @@ export default function Products() {
                   {Number(adjustForm.countedQty) > adjustForm.currentStock ? '+' : ''}{Number(adjustForm.countedQty) - adjustForm.currentStock}
                 </span></div>
               )}
+
+              {/* นับได้น้อยกว่าที่วางไว้บนชั้น = ของหายไปจากชั้นด้วย ต้องบอกระบบว่าหายจากที่ไหน
+                  ไม่งั้นผังคลังจะยังบอกว่ามีของอยู่ ทั้งที่บัญชีบอกว่าหมดแล้ว */}
+              {(() => {
+                const placed = adjustLocations.reduce((sum, loc) => sum + Number(loc.quantity), 0);
+                const counted = adjustForm.countedQty === '' ? null : Number(adjustForm.countedQty);
+                const excess = counted == null ? 0 : placed - counted;
+                if (excess <= 0 || adjustLocations.length === 0) return null;
+                const single = adjustLocations.length === 1;
+                const allocated = adjustLocations.reduce((sum, loc) => sum + (Number(adjustCuts[loc.id]) || 0), 0);
+                const left = excess - (single ? excess : allocated);
+                return (
+                  <div className="rounded-xl border border-warning/50 bg-warning/10 p-3 space-y-2">
+                    <div className="text-sm font-bold">ของบนชั้นหายไป {excess} ชิ้น — หายจากที่ไหน?</div>
+                    {single ? (
+                      <p className="text-xs">
+                        วางอยู่ที่เดียวคือ <b>{adjustLocations[0].rackName || adjustLocations[0].roomName}
+                        {adjustLocations[0].storageLevel ? ` เลเวล ${adjustLocations[0].storageLevel}` : ''}</b> ({adjustLocations[0].quantity} ชิ้น)
+                        — ระบบจะหักออกจากที่นี่ให้อัตโนมัติ
+                      </p>
+                    ) : (
+                      <>
+                        {adjustLocations.map((loc) => (
+                          <div key={loc.id} className="flex items-center gap-2">
+                            <span className="flex-1 truncate text-xs">
+                              📍 {loc.rackName || loc.roomName}{loc.storageLevel ? ` · เลเวล ${loc.storageLevel}` : ''}
+                              <span className="opacity-60"> (มี {loc.quantity})</span>
+                            </span>
+                            <input
+                              type="number" min="0" max={loc.quantity}
+                              className="input input-bordered input-xs w-20"
+                              value={adjustCuts[loc.id] ?? ''}
+                              placeholder="0"
+                              onChange={(e) => setAdjustCuts({ ...adjustCuts, [loc.id]: e.target.value })}
+                            />
+                          </div>
+                        ))}
+                        <div className={`text-xs font-semibold ${left === 0 ? 'text-success' : 'text-error'}`}>
+                          {left === 0 ? '✓ ระบุครบแล้ว' : `ยังต้องระบุอีก ${left} ชิ้น`}
+                        </div>
+                      </>
+                    )}
+                  </div>
+                );
+              })()}
               <textarea className="textarea textarea-bordered h-20 w-full" value={adjustForm.note}
                 onChange={e => setAdjustForm({ ...adjustForm, note: e.target.value })} placeholder="เหตุผล เช่น นับสต็อกประจำเดือน / ของชำรุด / สูญหาย"></textarea>
               <div className="flex justify-end gap-3 pt-4 border-t border-base-200">

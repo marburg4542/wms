@@ -170,6 +170,15 @@ button, .btn, a, label, [role="button"], input[type="checkbox"], input[type="rad
   touch-action: manipulation;
 }
 
+/* iOS Safari ซูมหน้าจอเข้าอัตโนมัติเมื่อแตะช่องกรอกที่ font-size < 16px
+   (input-sm/select-sm ของ daisyUI เป็น 12px) — บังคับ 16px เฉพาะจอเล็กเพื่อกันซูมกระตุก
+   โดยไม่กระทบขนาดตัวอักษรบนจอเดสก์ท็อป */
+@media (max-width: 768px) {
+  input, select, textarea {
+    font-size: 16px;
+  }
+}
+
 /* เพิ่ม Animation สำหรับ WMS */
 @layer utilities {
   /* ห้ามใส่ forwards: จะทำให้ transform ของเฟรมสุดท้ายค้างถาวร แล้ว element นี้

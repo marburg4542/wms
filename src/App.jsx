@@ -1,6 +1,6 @@
 // src/App.jsx
 import React, { useState, useEffect } from 'react';
-import { Routes, Route, Navigate } from 'react-router-dom';
+import { Routes, Route, Navigate, useLocation } from 'react-router-dom';
 import { Toaster } from 'react-hot-toast';
 import { fetchApi } from './utils/api';
 import { subscribeIfGranted } from './utils/push';
@@ -13,6 +13,7 @@ import ResetPasswordPage from './components/ResetPassword';
 import Inventory from './components/Inventory';
 import Products from './components/Products';
 import Analysis from './components/Analysis';
+import Storage from './components/Storage';
 import UserManagement from './components/UserManagement';
 import InstallPrompt from './components/InstallPrompt';
 import WelcomeTips from './components/WelcomeTips';
@@ -32,6 +33,8 @@ const ProtectedRoute = ({ children, allowedRoles }) => {
 };
 
 export default function App() {
+  const location = useLocation();
+  const isStoragePage = location.pathname === '/storage';
   const [isAuthenticated, setIsAuthenticated] = useState(!!sessionStorage.getItem('token'));
   const [isVerifying, setIsVerifying] = useState(true);
 
@@ -76,8 +79,8 @@ export default function App() {
       {/* พื้นหลังจริงเป็น gradient ที่ body (index.css) — wrapper ต้องโปร่งใสให้เห็น */}
       <div className="min-h-screen flex flex-col bg-transparent transition-colors duration-300">
         <Navbar />
-        <div className="relative flex-1">
-          <main className="h-full p-4 md:p-6 lg:p-8 max-w-7xl mx-auto w-full">
+        <div className={`relative flex-1 ${isStoragePage ? 'min-h-0 overflow-hidden' : ''}`}>
+          <main className={isStoragePage ? 'h-[calc(100vh-4rem)] w-full overflow-auto p-2 lg:overflow-hidden' : 'h-full p-4 md:p-6 lg:p-8 max-w-7xl mx-auto w-full'}>
             <Routes>
               <Route path="/" element={<Navigate to="/homepage" replace />} />
               <Route path="/login" element={<LoginPage />} />
@@ -85,6 +88,7 @@ export default function App() {
 
               <Route path="/homepage" element={<ProtectedRoute><Homepage /></ProtectedRoute>} />
               <Route path="/inventory" element={<ProtectedRoute><Inventory /></ProtectedRoute>} />
+              <Route path="/storage" element={<ProtectedRoute><Storage /></ProtectedRoute>} />
               <Route path="/settings" element={<ProtectedRoute><SettingsPage /></ProtectedRoute>} />
               
               <Route path="/products" element={<ProtectedRoute allowedRoles={['Admin', 'Manager']}><Products /></ProtectedRoute>} />

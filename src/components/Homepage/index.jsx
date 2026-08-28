@@ -1,6 +1,6 @@
 // src/components/Homepage/index.jsx
 import React, { useState, useEffect, useCallback } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate, Link } from 'react-router-dom';
 import { fetchApi, getAssetUrl } from '../../utils/api';
 import { txTypeLabel, txStatusLabel } from '../../utils/labels';
 import { onServerEvent } from '../../utils/events';
@@ -34,7 +34,9 @@ export default function Homepage() {
   const [exportProjectFilter, setExportProjectFilter] = useState('all');
   const [exporting, setExporting] = useState(false);
   const [itemsModal, setItemsModal] = useState(null); // ใบเบิกที่กำลังดูรายการอะไหล่ (recheck ตอนส่งมอบ)
-  useBodyScrollLock(!!approveModal || exportModalOpen || !!itemsModal); // freeze พื้นหลังตอนเปิด modal
+  const [cancelResv, setCancelResv] = useState(null);   // ใบที่กำลังยกเลิกการจอง
+  const [cancelReason, setCancelReason] = useState('');
+  useBodyScrollLock(!!approveModal || exportModalOpen || !!itemsModal || !!cancelResv); // freeze พื้นหลังตอนเปิด modal
 
   const offset = new Date().getTimezoneOffset() * 60000;
   const todayStr = new Date(Date.now() - offset).toISOString().slice(0, 10);
@@ -184,10 +186,31 @@ export default function Homepage() {
     }
   };
 
+  // ยกเลิกการจองใบที่อนุมัติแล้วแต่ไม่มีคนมารับ — คืนของเข้าสต็อก ต้องระบุเหตุผล
+  const submitCancelReservation = async () => {
+    const reason = cancelReason.trim();
+    if (!reason) return toast.error('กรุณาระบุเหตุผลการยกเลิกการจอง');
+    try {
+      const res = await fetchApi(`/api/transactions/${cancelResv.id}/cancel-reservation`, {
+        method: 'PUT',
+        body: JSON.stringify({ reason })
+      });
+      if (res.success) {
+        toast.success(res.message);
+        setCancelResv(null);
+        setCancelReason('');
+        loadDashboardData();
+      }
+    } catch (err) {
+      toast.error(err?.message || 'ยกเลิกการจองไม่สำเร็จ');
+    }
+  };
+
   const handlePickup = async (tx) => {
     const ok = await confirmDialog({
       title: 'ยืนยันการส่งมอบสินค้า',
-      message: `ส่งมอบสินค้าตามใบเบิก ${tx.transactionId || tx.id} ให้ผู้ขอเบิกแล้ว?`,
+      message: `ส่งมอบสินค้าตามใบเบิก ${tx.transactionId || tx.id} ให้ผู้ขอเบิกแล้ว?
+⚠️ ระบบจะตัดสต็อกจริงเมื่อกดยืนยัน`,
       confirmText: 'ส่งมอบแล้ว'
     });
     if (!ok) return;
@@ -316,6 +339,44 @@ export default function Homepage() {
         }
       });
 
+      // ---- ตารางสรุปยอดรวมต่อสินค้า (ต่อท้ายรายงาน) ----
+      const summaryMap = new Map(); // sku -> { name, inbound, outbound }
+      for (const tx of exportFilteredLogs) {
+        // นับเฉพาะนำเข้า/เบิกออกจริง — ข้ามการปรับยอด (ADJUSTMENT) และประเภทอื่น
+        if (tx.type !== 'INBOUND' && tx.type !== 'OUTBOUND') continue;
+        for (const item of getItemsToRender(tx)) {
+          const sku = item.sku || '-';
+          const e = summaryMap.get(sku) || { name: item.productName || '-', inbound: 0, outbound: 0 };
+          if (tx.type === 'INBOUND') e.inbound += Number(item.requestedQty) || 0;
+          else e.outbound += Number(item.approvedQty) || 0;
+          summaryMap.set(sku, e);
+        }
+      }
+      const summaryRows = [...summaryMap.entries()]
+        .map(([sku, v]) => [sku, v.name, String(v.inbound), String(v.outbound)])
+        .sort((a, b) => a[0].localeCompare(b[0]));
+
+      if (summaryRows.length > 0) {
+        doc.addPage();
+        autoTable(doc, {
+          startY: 22,
+          margin: { top: 20, bottom: 12, left: 8, right: 8 },
+          head: [['SKU', 'ชื่อสินค้า', 'รับเข้ารวม (ชิ้น)', 'เบิกออกรวม (ชิ้น)']],
+          body: summaryRows,
+          styles: { font: 'Sarabun', fontSize: 9, cellPadding: 2, valign: 'middle' },
+          headStyles: { font: 'Sarabun', fillColor: [16, 122, 87], textColor: 255 },
+          alternateRowStyles: { fillColor: [237, 247, 242] },
+          columnStyles: { 0: { cellWidth: 34 }, 2: { halign: 'center' }, 3: { halign: 'center' } },
+          didDrawPage: () => {
+            doc.setFont('Sarabun'); doc.setFontSize(13); doc.setTextColor(16, 122, 87);
+            doc.text('สรุปยอดรวมต่อสินค้า', 148.5, 12, { align: 'center' });
+            doc.setFontSize(9); doc.setTextColor(110);
+            doc.text(`${periodLabel} · รวม ${summaryRows.length} รายการสินค้า`, 148.5, 17, { align: 'center' });
+            doc.text(`หน้า ${doc.internal.getNumberOfPages()}`, 289, 203, { align: 'right' });
+          }
+        });
+      }
+
       doc.save(`WMS_Report_${exportType}_${exportValue}.pdf`);
       toast.success('บันทึกไฟล์ PDF เรียบร้อย', { id: 'pdf-toast' });
       setExportModalOpen(false);
@@ -394,7 +455,10 @@ export default function Homepage() {
                           : <span className="text-xs opacity-50">-</span>
                       ) : (
                         isAdmin
-                          ? <button onClick={() => handlePickup(tx)} className="btn btn-xs btn-success text-white shadow-sm">รับแล้ว</button>
+                          ? <div className="flex gap-1">
+                              <button onClick={() => handlePickup(tx)} className="btn btn-xs btn-success text-white shadow-sm">รับแล้ว</button>
+                              <button onClick={() => { setCancelResv(tx); setCancelReason(''); }} className="btn btn-xs btn-ghost text-error" title="ยกเลิกการจองและคืนของเข้าสต็อก">ยกเลิกจอง</button>
+                            </div>
                           : <span className="badge badge-xs badge-success badge-outline">มารับสินค้าได้</span>
                       )}
                     </td>
@@ -515,14 +579,15 @@ export default function Homepage() {
       {/* Modal สำหรับการเลือก Export */}
       {itemsModal && (
         <div className="fixed inset-0 z-120 flex items-center justify-center backdrop-blur-md p-4" onClick={() => setItemsModal(null)}>
-          <div className="glass-modal p-5 sm:p-6 rounded-2xl max-w-lg w-full max-h-[85vh] overflow-y-auto" onClick={e => e.stopPropagation()}>
+          <div className="glass-modal p-5 sm:p-6 rounded-2xl max-w-5xl w-full max-h-[85vh] overflow-y-auto" onClick={e => e.stopPropagation()}>
             <h3 className="font-bold text-lg border-b border-base-200 pb-3 mb-1 flex items-center gap-2">📋 รายการอะไหล่ในใบเบิก</h3>
             <p className="text-xs text-base-content/60 mb-4">
               {itemsModal.transactionId || itemsModal.id} · โปรเจกต์: {itemsModal.project || '-'} · ผู้ขอ: {itemsModal.requesterUsername || '-'}
             </p>
+            {/* ตำแหน่งจัดเก็บสำหรับ Admin/Manager ตรวจก่อนเตรียมสินค้า — พาไปหน้าผังคลังได้เลย */}
             <div className="overflow-x-auto">
               <table className="table table-sm">
-                <thead><tr><th>รูป</th><th>SKU</th><th>ชื่อสินค้า</th><th className="text-right">ขอ</th><th className="text-right">อนุมัติ/ส่งมอบ</th></tr></thead>
+                <thead><tr><th>รูป</th><th>SKU</th><th className="min-w-[22rem]">ชื่อสินค้า</th><th className="text-right">ขอ</th><th className="text-right">อนุมัติ/ส่งมอบ</th>{isAdmin && <th>ตำแหน่งจัดเก็บ</th>}</tr></thead>
                 <tbody>
                   {getItemsToRender(itemsModal).map((it, i) => (
                     <tr key={i} className="hover:bg-base-200/40">
@@ -530,15 +595,68 @@ export default function Homepage() {
                         <div className="avatar"><div className="w-10 h-10 rounded bg-base-300"><img src={getImg(it.imageUrl)} crossOrigin="anonymous" alt={it.sku} /></div></div>
                       </td>
                       <td className="font-mono text-xs">{it.sku}</td>
-                      <td className="text-sm">{it.productName}</td>
+                      <td className="text-sm min-w-[22rem]">{it.productName}</td>
                       <td className="text-right">{it.requestedQty}</td>
                       <td className="text-right font-bold text-success">{it.approvedQty}</td>
+                      {isAdmin && (
+                        <td className="text-xs whitespace-nowrap">
+                          {it.rackName ? (
+                            <Link
+                              to={`/storage?highlight=${it.sku}`}
+                              onClick={() => setItemsModal(null)}
+                              className="link link-primary flex items-center gap-1"
+                              title="ไปที่ตำแหน่งจัดเก็บในผังคลัง"
+                            >
+                              📍 {it.rackName}{it.storageLevel ? ` · เลเวล ${it.storageLevel}` : ''}
+                            </Link>
+                          ) : <span className="text-base-content/30">ยังไม่ระบุ</span>}
+                        </td>
+                      )}
                     </tr>
                   ))}
                 </tbody>
               </table>
             </div>
-            <div className="flex justify-end mt-4"><button className="btn btn-ghost" onClick={() => setItemsModal(null)}>ปิด</button></div>
+            <div className="flex flex-wrap justify-end gap-2 mt-4">
+              {/* เปิดทั้งใบบนผังคลังพร้อมเส้นทางเดินหยิบ — สำหรับเตรียมของก่อนผู้ขอมารับ */}
+              {isAdmin && (
+                <Link
+                  to={`/storage?pick=${encodeURIComponent(itemsModal.transactionId || itemsModal.id)}`}
+                  onClick={() => setItemsModal(null)}
+                  className="btn btn-primary text-white"
+                >
+                  🗺️ ดูทั้งใบบนผังคลัง
+                </Link>
+              )}
+              <button className="btn btn-ghost" onClick={() => setItemsModal(null)}>ปิด</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {cancelResv && (
+        <div className="fixed inset-0 z-120 flex items-center justify-center backdrop-blur-md p-4" onClick={() => setCancelResv(null)}>
+          <div className="glass-modal p-5 sm:p-6 rounded-2xl w-full max-w-md" onClick={e => e.stopPropagation()}>
+            <h3 className="font-bold text-lg border-b border-base-200 pb-3 mb-2">↩️ ยกเลิกการจอง</h3>
+            <p className="text-xs text-base-content/60 mb-1">
+              {cancelResv.transactionId || cancelResv.id} · โปรเจกต์: {cancelResv.project || '-'} · ผู้ขอ: {cancelResv.requesterUsername || '-'}
+            </p>
+            <p className="text-xs text-base-content/60 mb-4">ของที่กันไว้จะถูกปล่อยคืนเข้าสต็อกให้คนอื่นเบิกได้ทันที (ใบนี้ยังไม่ได้ตัดสต็อก)</p>
+            <label className="form-control mb-4">
+              <span className="label-text text-xs font-bold mb-1">เหตุผลการยกเลิก (จำเป็น)</span>
+              <textarea
+                autoFocus
+                className="textarea textarea-bordered w-full"
+                rows={3}
+                placeholder="เช่น ผู้ขอไม่มารับเกิน 30 วัน / โครงการถูกยกเลิก"
+                value={cancelReason}
+                onChange={e => setCancelReason(e.target.value)}
+              />
+            </label>
+            <div className="flex justify-end gap-2">
+              <button className="btn btn-ghost" onClick={() => setCancelResv(null)}>ปิด</button>
+              <button className="btn btn-error text-white" disabled={!cancelReason.trim()} onClick={submitCancelReservation}>ยกเลิกการจอง</button>
+            </div>
           </div>
         </div>
       )}

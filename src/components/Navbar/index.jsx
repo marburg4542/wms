@@ -222,6 +222,7 @@ export default function Navbar() {
             <li className="menu-title text-base-content/50 text-xs">เมนูระบบคลังสินค้า</li>
             <li><Link to="/homepage">📊 แดชบอร์ด & คำขอเบิก</Link></li>
             <li><Link to="/inventory">📦 สินค้าคงคลัง</Link></li>
+            <li><Link to="/storage">🗺️ ผังคลัง</Link></li>
             {['Admin', 'Manager'].includes(currentUser.role) && (
               <li><Link to="/products">🏷️ รายการอะไหล่</Link></li>
             )}

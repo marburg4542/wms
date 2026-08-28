@@ -22,6 +22,19 @@ export const stockStatusLabel = (status) => ({
   'Out of Stock': 'หมดสต็อก'
 }[status] || status);
 
+// ตำแหน่งจัดเก็บที่คนอ่านเข้าใจ — คืน null เมื่อยังไม่รู้ว่าอยู่ไหน
+//   ชั้นวางปกติ      → "A5 · เลเวล 3"
+//   พื้นที่วางพื้น     → "floor2"        (ไม่มีเลเวลให้พูดถึง)
+//   วางในห้อง/โซน   → "TAI"           (ของในโซนจัดเตรียมเคยไม่แสดงตำแหน่งเลย)
+export const locationLabel = (item) => {
+  if (item?.rackName) {
+    return item.isFloorZone || !item.storageLevel
+      ? item.rackName
+      : `${item.rackName} · เลเวล ${item.storageLevel}`;
+  }
+  return item?.roomName || null;
+};
+
 export const userStatusLabel = (status) => ({
   Active: 'ใช้งานอยู่',
   Pending: 'รออนุมัติ',

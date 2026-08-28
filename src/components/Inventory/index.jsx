@@ -1,8 +1,8 @@
 // src/components/Inventory/index.jsx
 import React, { useState, useEffect, useCallback, useRef } from 'react';
-import { useSearchParams } from 'react-router-dom';
+import { useSearchParams, Link } from 'react-router-dom';
 import { fetchApi, getAssetUrl } from '../../utils/api';
-import { stockStatusLabel } from '../../utils/labels';
+import { locationLabel, stockStatusLabel } from '../../utils/labels';
 import { onServerEvent } from '../../utils/events';
 import BarcodeScanner from '../BarcodeScanner';
 import { isCameraScanDevice } from '../../utils/device';
@@ -73,6 +73,8 @@ export default function Inventory() {
       const query = new URLSearchParams({ limit: String(PAGE_SIZE), page: String(page) });
       if (searchTerm.trim()) query.set('search', searchTerm.trim());
       if (groupFilter) query.set('group', groupFilter);
+      // ส่งโครงการไปด้วย เพื่อให้ server คำนวณ "เบิกได้" ตามโควตาพื้นที่จัดเตรียมของโครงการนั้น
+      if (selectedProject) query.set('project', selectedProject);
       const json = await fetchApi(`/api/products?${query.toString()}`);
       // ทิ้ง response เก่าถ้ามีคำขอใหม่กว่ายิงตามมาแล้ว (กันค่าเด้งกลับไปมา)
       if (reqId !== reqIdRef.current) return;
@@ -86,10 +88,10 @@ export default function Inventory() {
     } finally {
       if (reqId === reqIdRef.current && !silent) setLoading(false);
     }
-  }, [searchTerm, groupFilter, page]);
+  }, [searchTerm, groupFilter, page, selectedProject]);
 
   // เปลี่ยนคำค้น/หมวดหมู่ → กลับไปหน้า 1 เสมอ (ไม่งั้นอาจค้างหน้าที่ไม่มีผลลัพธ์)
-  useEffect(() => { setPage(1); }, [searchTerm, groupFilter]);
+  useEffect(() => { setPage(1); }, [searchTerm, groupFilter, selectedProject]);
 
   const loadGroups = useCallback(() => {
     fetchApi('/api/product-groups')
@@ -136,16 +138,25 @@ export default function Inventory() {
   // ค้นหา/กรอง/แบ่งหน้าทำที่ฝั่ง server แล้ว — แสดงผลตามที่ได้มาตรงๆ (ไม่กรองซ้ำ ไม่งั้นจะซ่อนผลที่ match ผู้ขาย)
   const filteredData = data;
 
+  // ยอดที่เบิกได้จริง = คงเหลือ − ที่ถูกจองให้ใบเบิกที่อนุมัติแล้วรอรับของ
+  const availableOf = (product) => Number(product.available ?? product.stock ?? 0);
+
   const addToCart = (product) => {
-    if (product.stock <= 0) return toast.error('สินค้านี้หมดสต็อก');
+    const available = availableOf(product);
+    if (available <= 0) {
+      if (product.stock <= 0) return toast.error('สินค้านี้หมดสต็อก');
+      return toast.error(product.availableSource === 'staging'
+        ? `${product.sku} ใช้โควตาของโครงการ ${selectedProject} ครบแล้ว (จัดเตรียมไว้ ${product.stagingQuota}) — แจ้งผู้จัดการเติมของเข้าพื้นที่จัดเตรียม`
+        : `${product.sku} ถูกกันไว้ให้โครงการอื่นหมดแล้ว (คงเหลือ ${product.stock} · ของกลาง ${product.freeStock})`);
+    }
     const existing = cart.find(c => c.productId === product.id);
     if (existing) {
       const current = Number(existing.quantity) || 0;
-      if (current >= product.stock) return toast.error('ขอเบิกเกินสต็อกไม่ได้');
+      if (current >= available) return toast.error(`ขอเบิกเกินยอดที่เบิกได้ (${available})`);
       setCart(cart.map(c => c.productId === product.id ? { ...c, quantity: current + 1 } : c));
     } else {
       // 👇 บันทึก imageUrl ลงในตะกร้า
-      setCart([...cart, { productId: product.id, sku: product.sku, productName: product.name, imageUrl: product.imageUrl, quantity: 1, stock: product.stock }]);
+      setCart([...cart, { productId: product.id, sku: product.sku, productName: product.name, imageUrl: product.imageUrl, quantity: 1, stock: available }]);
     }
     toast.success(`เพิ่ม ${product.sku} ลงในใบเบิกแล้ว`);
   };
@@ -272,6 +283,16 @@ export default function Inventory() {
         </div>
       </div>
 
+      {canWithdraw && !selectedProject && (
+        <div className="alert alert-info py-2 text-sm">
+          <span>
+            💡 <b>เลือกโครงการก่อน</b> เพื่อดูจำนวนที่เบิกได้จริงของโครงการนั้น —
+            ตอนนี้แสดงเฉพาะ <b>ของกลาง</b> ที่ยังไม่ได้กันไว้ให้โครงการใด
+            (สินค้าที่ถูกจัดเตรียมไว้ให้โครงการอื่นจะไม่รวมอยู่ในยอดนี้)
+          </span>
+        </div>
+      )}
+
       <div className="card glass-panel overflow-hidden flex flex-col">
         <div className="p-4 border-b border-base-200 flex flex-col sm:flex-row gap-3 sm:items-center bg-base-200/30">
           <div className="flex gap-2 w-full max-w-xs">
@@ -321,7 +342,7 @@ export default function Inventory() {
             <div className="overflow-x-auto hidden md:block">
               <table className="table table-sm w-full">
                 <thead className="bg-base-200/50">
-                  <tr><th>รูปภาพ</th><th>รหัสสินค้า</th><th>ชื่อสินค้า</th><th>หมวดหมู่</th><th>คงเหลือ</th><th>สถานะ</th>{canWithdraw && <th>เบิก</th>}</tr>
+                  <tr><th>รูปภาพ</th><th>รหัสสินค้า</th><th>ชื่อสินค้า</th><th>หมวดหมู่</th><th>คงเหลือ</th><th>จองแล้ว</th><th>เบิกได้</th><th>สถานะ</th>{canWithdraw && <th>เบิก</th>}</tr>
                 </thead>
                 <tbody>
                   {filteredData.map((item) => (
@@ -333,15 +354,27 @@ export default function Inventory() {
                           </div>
                         </div>
                       </td>
-                      <td className="font-mono text-xs font-semibold">{item.sku}</td>
+                      <td className="font-mono text-xs font-semibold">
+                        {item.sku}
+                        {locationLabel(item) && <Link to={`/storage?highlight=${item.sku}`} className="ml-1" title={`ตำแหน่ง: ${locationLabel(item)}`}>📍</Link>}
+                      </td>
                       <td className="text-sm font-medium">{item.name}</td>
                       <td className="text-xs opacity-70">{item.groupId} — {item.groupName || 'Default'}</td>
                       <td className="font-bold">{item.stock}</td>
+                      <td className={Number(item.reserved) > 0 ? 'font-semibold text-warning' : 'opacity-30'}>{Number(item.reserved) || 0}</td>
+                      <td className="font-bold">
+                        {availableOf(item)}
+                        {item.availableSource === 'staging' && (
+                          <span className="ml-1 badge badge-warning badge-xs" title={`จัดเตรียมไว้ให้โครงการ ${selectedProject} จำนวน ${item.stagingQuota}`}>
+                            โควตา {item.stagingQuota}
+                          </span>
+                        )}
+                      </td>
                       {/* ตาราง desktop ใช้ label สั้น 'หมด' (มือถือ/รายงานยังใช้คำเต็มจาก stockStatusLabel) */}
                       <td><span className={`badge badge-sm text-white ${item.stock > 20 ? 'badge-success' : item.stock > 0 ? 'badge-warning' : 'badge-error'}`}>{item.stock === 0 ? 'หมด' : stockStatusLabel(item.status)}</span></td>
                       {canWithdraw && (
                         <td>
-                          <button onClick={() => addToCart(item)} disabled={item.stock === 0} className="btn btn-primary btn-xs">เพิ่ม</button>
+                          <button onClick={() => addToCart(item)} disabled={availableOf(item) <= 0} className="btn btn-primary btn-xs">เพิ่ม</button>
                         </td>
                       )}
                     </tr>
@@ -362,13 +395,19 @@ export default function Inventory() {
                   <div className="flex-1 min-w-0">
                     <p className="font-medium text-sm truncate">{item.name}</p>
                     <p className="font-mono text-xs opacity-60">{item.sku} · {item.groupId}</p>
+                    {locationLabel(item) && <Link to={`/storage?highlight=${item.sku}`} className="text-[10px] text-primary">📍 {locationLabel(item)}</Link>}
                     <div className="flex items-center gap-2 mt-1">
                       <span className="text-sm font-bold">คงเหลือ {item.stock}</span>
+                      <span className="text-[11px] text-warning">
+                        {item.availableSource === 'staging'
+                          ? `เบิกได้ ${availableOf(item)} (โควตา ${selectedProject} = ${item.stagingQuota})`
+                          : Number(item.reserved) > 0 ? `กันไว้ ${item.reserved} · เบิกได้ ${availableOf(item)}` : ''}
+                      </span>
                       <span className={`badge badge-xs text-white ${item.stock > 20 ? 'badge-success' : item.stock > 0 ? 'badge-warning' : 'badge-error'}`}>{stockStatusLabel(item.status)}</span>
                     </div>
                   </div>
                   {canWithdraw && (
-                    <button onClick={() => addToCart(item)} disabled={item.stock === 0} className="btn btn-primary btn-sm shrink-0">เบิก</button>
+                    <button onClick={() => addToCart(item)} disabled={availableOf(item) <= 0} className="btn btn-primary btn-sm shrink-0">เบิก</button>
                   )}
                 </div>
               ))}
@@ -456,6 +495,11 @@ export default function Inventory() {
                   <option value="" disabled>— เลือกโปรเจกต์ —</option>
                   {projectList.map(p => <option key={p.id} value={p.name}>{p.name}</option>)}
                 </select>
+                {selectedProject && reqProject && reqProject !== selectedProject && (
+                  <span className="text-[11px] text-warning mt-1">
+                    ⚠️ ยอดที่เห็นในตารางคำนวณจากโครงการ “{selectedProject}” แต่กำลังส่งใบเบิกในนาม “{reqProject}” — จำนวนที่เบิกได้จริงอาจต่างกัน
+                  </span>
+                )}
                 {projectList.length === 0 && (
                   <span className="text-[10px] text-warning mt-1">ยังไม่มีโปรเจกต์ — ให้ผู้จัดการเพิ่มก่อน (ปุ่ม ⚙️ ด้านบน)</span>
                 )}
