@@ -6,7 +6,9 @@
   "scripts": {
     "start": "node index.js",
     "create-admin": "node createAdmin.js",
-    "backup": "node tools/backup.mjs"
+    "backup": "node tools/backup.mjs",
+    "audit": "node tools/audit.mjs",
+    "test": "node --test \"test/*.test.js\""
   },
   "dependencies": {
     "bcryptjs": "^2.4.3",
