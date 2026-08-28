@@ -47,3 +47,7 @@ __pycache__/
 *.njsproj
 *.sln
 *.sw?
+
+# เอกสารที่ generate ออกมา (คู่มือ PDF/Word) + ไฟล์อ้างอิง — สร้างใหม่ได้จาก tools/build_role_manuals.py
+# ถ้าต้องการเก็บลง git ให้ลบบรรทัดนี้ออก
+output/

@@ -10,10 +10,14 @@ import userRoutes from './routes/userRoutes.js';
 import productRoutes from './routes/productRoutes.js';
 import analysisRoutes from './routes/analysisRoutes.js';
 import projectRoutes from './routes/projectRoutes.js';
+import rackRoutes from './routes/rackRoutes.js';
+import roomRoutes from './routes/roomRoutes.js';
+import storageMapRoutes from './routes/storageMapRoutes.js';
 import uploadRoutes from './upload.js';
 import eventsRouter from './events.js';
 import pushRoutes from './routes/pushRoutes.js';
 import { config } from './config.js';
+import { verifyEmailTransport } from './utils/sendEmail.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -38,6 +42,9 @@ app.use('/api', userRoutes);
 app.use('/api', productRoutes);
 app.use('/api', analysisRoutes);
 app.use('/api', projectRoutes);
+app.use('/api', rackRoutes);
+app.use('/api', roomRoutes);
+app.use('/api', storageMapRoutes);
 app.use('/api', uploadRoutes);
 app.use('/api', eventsRouter);
 app.use('/api', pushRoutes);
@@ -55,4 +62,8 @@ if (fs.existsSync(distPath)) {
   console.log('🌐 Serving built frontend from dist/');
 }
 
-app.listen(config.port, () => console.log(`🚀 Server running on port ${config.port}`));
+app.listen(config.port, () => {
+  console.log(`🚀 Server running on port ${config.port}`);
+  // เช็คระบบอีเมลตอนสตาร์ท จะได้รู้ตั้งแต่ตอนนี้ ไม่ต้องรอให้ผู้ใช้กดลืมรหัสผ่านแล้วเงียบหาย
+  verifyEmailTransport();
+});

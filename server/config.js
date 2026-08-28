@@ -21,8 +21,13 @@ export const config = {
   dbFile: process.env.DB_FILE || 'identifier.sqlite',
   jwtSecret: process.env.JWT_SECRET,
   email: {
+    // ตั้ง EMAIL_HOST = ใช้ SMTP ขององค์กร | ไม่ตั้ง = ใช้ Gmail ตาม EMAIL_USER/EMAIL_PASS
+    host: process.env.EMAIL_HOST || '',
+    port: Number(process.env.EMAIL_PORT) || 587,
+    secure: String(process.env.EMAIL_SECURE || '').toLowerCase() === 'true',
     user: process.env.EMAIL_USER,
-    pass: process.env.EMAIL_PASS
+    pass: process.env.EMAIL_PASS,
+    from: process.env.EMAIL_FROM || ''
   },
   // Web Push (VAPID) — สำหรับแจ้งเตือนแบบ push ที่เด้งแม้ปิดแอป
   vapid: {
@@ -48,6 +53,6 @@ if (config.jwtSecret.length < 32) {
 }
 
 // เช็คค่าที่สำคัญว่าถูกตั้งค่าหรือยัง
-if (!config.email.user || !config.email.pass) {
+if (!config.email.host && (!config.email.user || !config.email.pass)) {
   console.warn('⚠️ Warning: Email configuration is missing in .env — email features will be skipped.');
 }
