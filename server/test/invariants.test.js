@@ -105,6 +105,55 @@ test('ปรับยอดเป็น 0 แล้วตำแหน่งต�
   assertClean('ปรับยอดเป็นศูนย์');
 });
 
+test('ย้ายหลายรายการทีเดียว — ตัวที่พลาดต้องไม่ทำให้ตัวอื่นค้างครึ่งทาง', async () => {
+  // หน้าจอย้ายทีละหลายรายการด้วยการยิงทีละตัว ถ้าตัวหนึ่งพลาดต้องไม่ลากตัวอื่นพังตาม
+  const made = await Promise.all([1, 2, 3].map((n) => callOk('createProduct', products.createProduct, {
+    body: { name: `ของชุด ${n}`, groupId: '01', groupName: 'ทดสอบ', unit: 'ชิ้น', latestCost: 5, initialStock: 6, rackId: shelf.id, storageLevel: 1 }
+  })));
+  const skus = made.map((row) => row.sku);
+
+  const results = [];
+  for (const [index, target] of skus.entries()) {
+    // ตัวกลางตั้งใจให้พลาด: ย้ายมากกว่าที่มีอยู่จริง
+    const quantity = index === 1 ? 999 : 6;
+    results.push(await call(storage.moveItemQuantity, {
+      body: { sku: target, from: { rackId: shelf.id, storageLevel: 1 }, to: { rackId: zone.id, storageLevel: 1 }, quantity }
+    }));
+  }
+
+  assert.equal(results[0].success, true, 'ตัวแรกต้องย้ายสำเร็จ');
+  assert.equal(results[1].success, false, 'ตัวกลางต้องถูกปฏิเสธ');
+  assert.equal(results[2].success, true, 'ตัวที่สามต้องย้ายสำเร็จ แม้ตัวก่อนหน้าจะพลาด');
+
+  const at = (target, rackId) => Number(db.prepare(
+    'SELECT COALESCE(SUM(quantity), 0) q FROM item_locations WHERE item_id = ? AND rack_id = ?'
+  ).get(target, rackId).q);
+  assert.equal(at(skus[0], zone.id), 6, 'ตัวแรกต้องไปถึงปลายทางครบ');
+  assert.equal(at(skus[1], zone.id), 0, 'ตัวที่พลาดต้องไม่ไปโผล่ปลายทาง');
+  assert.equal(at(skus[1], shelf.id), 6, 'ตัวที่พลาดต้องอยู่ที่เดิมครบ ไม่หายไปครึ่งทาง');
+  assert.equal(at(skus[2], zone.id), 6, 'ตัวที่สามต้องไปถึงปลายทางครบ');
+  assertClean('ย้ายหลายรายการโดยมีตัวพลาด');
+});
+
+test('เอาสินค้าออกจากเลเวลทีละหลายรายการ ยอดคงเหลือต้องไม่เปลี่ยน', async () => {
+  const rows = db.prepare('SELECT item_id sku FROM item_locations WHERE rack_id = ? AND storage_level = 1').all(zone.id);
+  assert.ok(rows.length >= 2, 'ต้องมีของในโซนอย่างน้อย 2 รายการ');
+  const before = rows.map((row) => stock(row.sku));
+
+  for (const row of rows) {
+    await callOk('assign quantity 0', storage.assignItemLocation, {
+      body: { sku: row.sku, rackId: zone.id, level: 1, quantity: 0 }
+    });
+  }
+  assert.equal(
+    db.prepare('SELECT COUNT(*) c FROM item_locations WHERE rack_id = ? AND storage_level = 1').get(zone.id).c,
+    0,
+    'ต้องไม่เหลือของในโซนแล้ว'
+  );
+  rows.forEach((row, index) => assert.equal(stock(row.sku), before[index], 'เอาออกจากชั้นต้องไม่แตะยอดคงเหลือ'));
+  assertClean('เอาออกทีละหลายรายการ');
+});
+
 test('ตรวจกติกาครบทุกข้อจริง ไม่ได้ข้ามข้อไหนไป', () => {
   assert.ok(INVARIANTS.length >= 19, `ต้องตรวจอย่างน้อย 19 กติกา (ตอนนี้ ${INVARIANTS.length})`);
   for (const [name, sql] of INVARIANTS) {

@@ -76,7 +76,7 @@ export default function Homepage() {
   // เพื่อให้คำขอเบิก/สถิติอัปเดตเองเมื่อมีคน inbound/outbound จากเครื่องอื่น
   useEffect(() => {
     loadDashboardData();
-    const interval = setInterval(loadDashboardData, 30000);
+    const interval = setInterval(loadDashboardData, 300000)  // 5 นาที — SSE ส่ง event ให้อยู่แล้ว อันนี้เป็นแค่ fallback เผื่อ stream หลุด;
     const onFocus = () => loadDashboardData();
     window.addEventListener('focus', onFocus);
     // SSE: อัปเดตทันทีที่มีใบเบิก/สต็อกเปลี่ยนจากเครื่องไหนก็ตาม (polling 30 วิเป็น fallback)
@@ -539,7 +539,7 @@ export default function Homepage() {
                     <td>
                       <div className="avatar">
                         <div className="w-8 h-8 rounded bg-base-300">
-                          <img src={getImg(item.imageUrl)} crossOrigin="anonymous" alt="item" />
+                          <img src={getImg(item.imageUrl)} crossOrigin="anonymous" alt="item" loading="lazy" decoding="async" width="40" height="40" />
                         </div>
                       </div>
                     </td>
@@ -592,7 +592,7 @@ export default function Homepage() {
                   {getItemsToRender(itemsModal).map((it, i) => (
                     <tr key={i} className="hover:bg-base-200/40">
                       <td>
-                        <div className="avatar"><div className="w-10 h-10 rounded bg-base-300"><img src={getImg(it.imageUrl)} crossOrigin="anonymous" alt={it.sku} /></div></div>
+                        <div className="avatar"><div className="w-10 h-10 rounded bg-base-300"><img src={getImg(it.imageUrl)} crossOrigin="anonymous" alt={it.sku} loading="lazy" decoding="async" width="40" height="40" /></div></div>
                       </td>
                       <td className="font-mono text-xs">{it.sku}</td>
                       <td className="text-sm min-w-[22rem]">{it.productName}</td>

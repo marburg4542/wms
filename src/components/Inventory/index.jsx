@@ -122,7 +122,7 @@ export default function Inventory() {
   // เผื่อมีคน inbound/outbound จากเครื่องอื่นระหว่างที่เปิดหน้านี้ค้างไว้
   useEffect(() => {
     const refresh = () => fetchProducts({ silent: true });
-    const interval = setInterval(refresh, 30000);
+    const interval = setInterval(refresh, 300000)  // 5 นาที — SSE ส่ง event ให้อยู่แล้ว อันนี้เป็นแค่ fallback เผื่อ stream หลุด;
     window.addEventListener('focus', refresh);
     const offProducts = onServerEvent('products', refresh);
     return () => {
@@ -350,7 +350,7 @@ export default function Inventory() {
                       <td>
                         <div className="avatar">
                           <div className="w-10 h-10 rounded bg-base-300">
-                            <img src={getImg(item.imageUrl)} crossOrigin="anonymous" alt={item.sku} />
+                            <img src={getImg(item.imageUrl)} crossOrigin="anonymous" alt={item.sku} loading="lazy" decoding="async" width="40" height="40" />
                           </div>
                         </div>
                       </td>
@@ -389,7 +389,7 @@ export default function Inventory() {
                 <div key={item.id} className="flex items-center gap-3 p-3">
                   <div className="avatar shrink-0">
                     <div className="w-14 h-14 rounded-lg bg-base-300">
-                      <img src={getImg(item.imageUrl)} crossOrigin="anonymous" alt={item.sku} />
+                      <img src={getImg(item.imageUrl)} crossOrigin="anonymous" alt={item.sku} loading="lazy" decoding="async" width="40" height="40" />
                     </div>
                   </div>
                   <div className="flex-1 min-w-0">
@@ -451,7 +451,7 @@ export default function Inventory() {
                   <div className="flex items-center gap-3 min-w-0">
                     <div className="avatar shrink-0">
                       <div className="w-10 h-10 rounded">
-                        <img src={getImg(item.imageUrl)} crossOrigin="anonymous" alt="product" />
+                        <img src={getImg(item.imageUrl)} crossOrigin="anonymous" alt="product" loading="lazy" decoding="async" width="40" height="40" />
                       </div>
                     </div>
                     <div className="text-xs min-w-0">

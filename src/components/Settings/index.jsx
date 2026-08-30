@@ -3,6 +3,7 @@ import React, { useState } from 'react';
 import toast from 'react-hot-toast';
 import { fetchApi, getAssetUrl } from '../../utils/api';
 import { enablePush, pushPermissionState, pushEnvironment } from '../../utils/push';
+import { shrinkImage } from '../../utils/image';
 
 export default function SettingsPage() {
   const stored = JSON.parse(sessionStorage.getItem('currentUser') || '{}');
@@ -27,12 +28,12 @@ export default function SettingsPage() {
     else toast.error('เปิดการแจ้งเตือนไม่สำเร็จ ลองใหม่อีกครั้ง');
   };
 
-  const handleAvatarChange = (e) => {
+  const handleAvatarChange = async (e) => {
     const file = e.target.files[0];
-    if (file) {
-      setAvatarFile(file);
-      setAvatarPreview(URL.createObjectURL(file));
-    }
+    if (!file) return;
+    const shrunk = await shrinkImage(file);   // รูปโปรไฟล์แสดงแค่ ~36px ไม่ต้องเก็บต้นฉบับจากกล้อง
+    setAvatarFile(shrunk);
+    setAvatarPreview(URL.createObjectURL(shrunk));
   };
 
   const handleProfileSubmit = async (e) => {

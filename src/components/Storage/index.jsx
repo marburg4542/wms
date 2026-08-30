@@ -126,7 +126,9 @@ function MarkerShape({ entity }) {
   return null;
 }
 
-function CanvasEntity({ entity, displayZ, selected, editMode, pickStop, pickDone, movedDuringRotate, onPointerDown, onResizeDown, onRotate, onRotateStart, onSelect, onOpen, onContextMenu }) {
+// หุ้มด้วย memo เพราะผังมีชิ้นส่วนเกือบร้อยชิ้น และ state ของผัง (โดยเฉพาะ viewport ตอนซูม)
+// เปลี่ยนถี่มาก ถ้าไม่หุ้มจะวาดใหม่ทุกชิ้นทุกครั้งที่หมุนล้อ
+const CanvasEntity = React.memo(function CanvasEntity({ entity, displayZ, selected, editMode, pickStop, pickDone, movedDuringRotate, onPointerDown, onResizeDown, onRotate, onRotateStart, onSelect, onOpen, onContextMenu }) {
   const isRoom = entity.kind === 'room';
   const isRack = entity.kind === 'rack';
   const width = Number(entity.width || (isRack ? RACK_WIDTH : 20));
@@ -233,7 +235,7 @@ function CanvasEntity({ entity, displayZ, selected, editMode, pickStop, pickDone
       )}
     </div>
   );
-}
+});
 
 function LayerButtons({ disabled, onMove }) {
   return (
@@ -657,7 +659,7 @@ function UnassignedModal({ onClose, onAssigned }) {
               <div key={item.sku} className="mb-2 flex flex-wrap items-center gap-2 rounded-xl bg-base-200/50 p-2">
                 <div className="avatar shrink-0">
                   <div className="h-10 w-10 rounded bg-base-300">
-                    <img src={itemImage(item.imageUrl)} crossOrigin="anonymous" alt={item.sku} />
+                    <img src={itemImage(item.imageUrl)} crossOrigin="anonymous" alt={item.sku} loading="lazy" decoding="async" width="40" height="40" />
                   </div>
                 </div>
                 <div className="min-w-40 flex-1">
@@ -786,6 +788,8 @@ export default function Storage() {
   const pinchRef = useRef(null);            // ระยะ/จุดกึ่งกลางระหว่าง 2 นิ้ว ตอนหุบ-กาง
   const touchPointsRef = useRef(new Map()); // นิ้วที่แตะอยู่ตอนนี้ (pointerId -> ตำแหน่ง)
   const userZoomedRef = useRef(false);      // ผู้ใช้ปรับซูมเองแล้วหรือยัง
+  const pendingZoomRef = useRef(null);      // ตัวคูณซูมที่สะสมไว้รอวาดเฟรมถัดไป
+  const zoomFrameRef = useRef(null);
   const endPointerActionRef = useRef(null); // เก็บตัวปิดงานลากไว้ในref ให้ listener ท่านิ้วผูกครั้งเดียวจบ
   const undoRef = useRef([]);
   const redoRef = useRef([]);
@@ -1107,13 +1111,27 @@ export default function Storage() {
     const rect = viewportRef.current?.getBoundingClientRect();
     if (!rect) return;
     userZoomedRef.current = true;
-    setViewport((current) => {
-      const zoom = clamp(current.zoom * factor, ZOOM_MIN, ZOOM_MAX);
-      const sx = clientPoint?.x ?? rect.width / 2;
-      const sy = clientPoint?.y ?? rect.height / 2;
-      const canvasX = (sx - current.panX) / current.zoom;
-      const canvasY = (sy - current.panY) / current.zoom;
-      return { zoom, panX: sx - canvasX * zoom, panY: sy - canvasY * zoom };
+
+    // ล้อเมาส์ยิง event ถี่กว่าที่จอวาดทัน — สะสมไว้แล้วอัปเดตครั้งเดียวต่อเฟรม
+    // (เดิม setViewport ทุก event ทำให้วาดผังใหม่ ~60 ครั้ง/วินาที ผังใหญ่ๆ จะหน่วงชัด)
+    pendingZoomRef.current = {
+      factor: (pendingZoomRef.current?.factor ?? 1) * factor,
+      point: clientPoint ?? pendingZoomRef.current?.point ?? null
+    };
+    if (zoomFrameRef.current) return;
+    zoomFrameRef.current = requestAnimationFrame(() => {
+      zoomFrameRef.current = null;
+      const pending = pendingZoomRef.current;
+      pendingZoomRef.current = null;
+      if (!pending) return;
+      setViewport((current) => {
+        const zoom = clamp(current.zoom * pending.factor, ZOOM_MIN, ZOOM_MAX);
+        const sx = pending.point?.x ?? rect.width / 2;
+        const sy = pending.point?.y ?? rect.height / 2;
+        const canvasX = (sx - current.panX) / current.zoom;
+        const canvasY = (sy - current.panY) / current.zoom;
+        return { zoom, panX: sx - canvasX * zoom, panY: sy - canvasY * zoom };
+      });
     });
   }, []);
 
@@ -1537,6 +1555,17 @@ export default function Storage() {
   }, [zoomBy]);
 
   useEffect(() => { endPointerActionRef.current = endPointerAction; }, [endPointerAction]);
+
+  // ส่งเป็น callback คงที่เข้า CanvasEntity — ถ้าสร้างใหม่ทุก render จะทำให้ memo ไร้ผล
+  const rotateEntityStep = useCallback((entity) => {
+    savePatch(entity.kind, entity.id, { rotation: ((Number(entity.rotation) || 0) + 15) % 360 });
+  }, [savePatch]);
+
+  const selectEntityFromCanvas = useCallback((item, event) => {
+    // เพิ่งลากเลื่อน/ซูมผังอยู่ ไม่ใช่ตั้งใจแตะเลือก — กลืนคลิกนี้ทิ้งแล้วเริ่มนับใหม่
+    if (movedRef.current) { movedRef.current = false; return; }
+    selectEntity(item, event);
+  }, [selectEntity]);
 
   const moveSelectedLayer = useCallback((action) => {
     if (!selectedKey || selectedEntity?.locked) return;
@@ -2192,12 +2221,8 @@ export default function Storage() {
                   onPointerDown={beginMove}
                   onResizeDown={beginResize}
                   onRotateStart={beginRotate}
-                  onRotate={(entity) => savePatch(entity.kind, entity.id, { rotation: ((Number(entity.rotation) || 0) + 15) % 360 })}
-                  onSelect={(item, event) => {
-                    // เพิ่งลากเลื่อน/ซูมผังอยู่ ไม่ใช่ตั้งใจแตะเลือก — กลืนคลิกนี้ทิ้งแล้วเริ่มนับใหม่
-                    if (movedRef.current) { movedRef.current = false; return; }
-                    selectEntity(item, event);
-                  }}
+                  onRotate={rotateEntityStep}
+                  onSelect={selectEntityFromCanvas}
                   onOpen={openEntity}
                   onContextMenu={(event, item) => {
                     if (!selectedKeys.includes(entityKey(item))) setSelectedKey(entityKey(item));

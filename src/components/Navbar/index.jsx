@@ -160,7 +160,7 @@ export default function Navbar() {
   // โหลดแจ้งเตือนทันที + รับสัญญาณ SSE แบบ real-time โดยคง polling 30 วิไว้เป็น fallback
   useEffect(() => {
     fetchNotificationsData();
-    const interval = setInterval(fetchNotificationsData, 30000);
+    const interval = setInterval(fetchNotificationsData, 300000)  // 5 นาที — SSE ส่ง event ให้อยู่แล้ว อันนี้เป็นแค่ fallback เผื่อ stream หลุด;
     const onFocus = () => fetchNotificationsData();
     window.addEventListener('focus', onFocus);
     const offTx = onServerEvent('transactions', fetchNotificationsData);

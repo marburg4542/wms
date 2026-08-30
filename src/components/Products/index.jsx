@@ -9,6 +9,7 @@ import BarcodeScanner from '../BarcodeScanner';
 import { isCameraScanDevice } from '../../utils/device';
 import { confirmDialog } from '../../utils/confirm';
 import { parseScannedCode } from '../../utils/qr';
+import { shrinkImage } from '../../utils/image';
 
 const PAGE_SIZE = 50; // จำนวนสินค้าต่อหน้า (แคตตาล็อกจริงมีหลายพันตัว ต้องแบ่งหน้า)
 import { ProductCardSkeleton } from '../Skeleton';
@@ -150,7 +151,7 @@ export default function Products() {
   // อัปเดตยอดสต็อกอัตโนมัติ: SSE ทันทีที่ข้อมูลเปลี่ยน + polling 30 วิเป็น fallback
   useEffect(() => {
     const refresh = () => fetchProducts({ silent: true });
-    const interval = setInterval(refresh, 30000);
+    const interval = setInterval(refresh, 300000)  // 5 นาที — SSE ส่ง event ให้อยู่แล้ว อันนี้เป็นแค่ fallback เผื่อ stream หลุด;
     window.addEventListener('focus', refresh);
     const offProducts = onServerEvent('products', refresh);
     return () => {
@@ -229,14 +230,21 @@ export default function Products() {
     setProductModal(true);
   };
 
-  const handleImageChange = (event) => {
+  const handleImageChange = async (event) => {
     const file = event.target.files?.[0];
+    event.target.value = ''; // ล้างค่า เผื่อเลือกไฟล์เดิมซ้ำ/สลับปุ่มกล้อง-อัลบั้ม
     if (!file) return;
     if (!file.type.startsWith('image/')) { toast.error('กรุณาเลือกไฟล์รูปภาพ'); return; }
     if (file.size > 5 * 1024 * 1024) { toast.error('ไฟล์รูปใหญ่เกิน 5MB'); return; }
-    setImageFile(file);
-    setImagePreview(URL.createObjectURL(file));
-    event.target.value = ''; // ล้างค่า เผื่อเลือกไฟล์เดิมซ้ำ/สลับปุ่มกล้อง-อัลบั้ม
+
+    // ย่อรูปก่อนอัปโหลด — รูปจากมือถือมักใหญ่ 1-4 MB แต่แอปแสดงใหญ่สุดแค่ระดับการ์ด
+    // ถ้าเก็บต้นฉบับ หน้าที่มีสินค้าเยอะจะต้องโหลดหลายสิบ MB
+    const shrunk = await shrinkImage(file);
+    if (shrunk !== file) {
+      toast.success(`ย่อรูปให้แล้ว ${(file.size / 1048576).toFixed(1)} → ${(shrunk.size / 1048576).toFixed(2)} MB`);
+    }
+    setImageFile(shrunk);
+    setImagePreview(URL.createObjectURL(shrunk));
   };
 
   const submitInbound = async (event) => {
@@ -579,7 +587,7 @@ export default function Products() {
           {filteredProducts.map((item) => (
             <div key={item.id} className="card glass-panel overflow-hidden hover:-translate-y-1 hover:shadow-2xl transition-all group">
               <figure className="h-44 bg-white border-b border-base-200 relative overflow-hidden">
-                <img src={getAssetUrl(item.imageUrl) || imageFallback} alt={item.name} className="object-cover w-full h-full group-hover:scale-105 transition-transform duration-500" />
+                <img src={getAssetUrl(item.imageUrl) || imageFallback} alt={item.name} loading="lazy" decoding="async" className="object-cover w-full h-full group-hover:scale-105 transition-transform duration-500" />
                 <div className="absolute top-2 right-2">
                   {item.isActive
                     ? <span className={`badge font-semibold text-white shadow-sm ${item.stock > item.minStock ? 'badge-success' : item.stock > 0 ? 'badge-warning' : 'badge-error'}`}>{stockStatusLabel(item.status)}</span>

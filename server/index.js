@@ -34,7 +34,12 @@ app.use(cors({
 app.use(express.json());
 
 // เปิดทางให้เข้าถึงรูปในโฟลเดอร์ uploads ได้
-app.use('/uploads', express.static(path.join(__dirname, 'uploads')));
+// ชื่อไฟล์เป็น timestamp + เลขสุ่ม จึงไม่มีวันถูกใช้ซ้ำ — cache ยาวๆ ได้อย่างปลอดภัย
+// (เดิมไม่มี header นี้ เปิดหน้าเดิมซ้ำก็ยิงถามเซิร์ฟเวอร์ใหม่ทุกรูป หน้าที่มีสินค้าเยอะจึงหน่วงมาก)
+app.use('/uploads', express.static(path.join(__dirname, 'uploads'), {
+  maxAge: '30d',
+  immutable: true
+}));
 
 app.use('/api', authRoutes);
 app.use('/api', transactionRoutes);

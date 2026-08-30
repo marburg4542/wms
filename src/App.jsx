@@ -1,5 +1,5 @@
 // src/App.jsx
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, Suspense, lazy } from 'react';
 import { Routes, Route, Navigate, useLocation } from 'react-router-dom';
 import { Toaster } from 'react-hot-toast';
 import { fetchApi } from './utils/api';
@@ -10,11 +10,11 @@ import Homepage from './components/Homepage';
 import LoginPage from './components/Login';
 import SettingsPage from './components/Settings';
 import ResetPasswordPage from './components/ResetPassword';
-import Inventory from './components/Inventory';
-import Products from './components/Products';
-import Analysis from './components/Analysis';
-import Storage from './components/Storage';
-import UserManagement from './components/UserManagement';
+const Inventory = lazy(() => import('./components/Inventory'));
+const Products = lazy(() => import('./components/Products'));
+const Analysis = lazy(() => import('./components/Analysis'));
+const Storage = lazy(() => import('./components/Storage'));
+const UserManagement = lazy(() => import('./components/UserManagement'));
 import InstallPrompt from './components/InstallPrompt';
 import WelcomeTips from './components/WelcomeTips';
 import { ConfirmHost } from './utils/confirm';
@@ -81,6 +81,7 @@ export default function App() {
         <Navbar />
         <div className={`relative flex-1 ${isStoragePage ? 'min-h-0 overflow-hidden' : ''}`}>
           <main className={isStoragePage ? 'h-[calc(100vh-4rem)] w-full overflow-auto p-2 lg:overflow-hidden' : 'h-full p-4 md:p-6 lg:p-8 max-w-7xl mx-auto w-full'}>
+            <Suspense fallback={<div className="flex min-h-[60vh] items-center justify-center"><span className="loading loading-spinner loading-lg text-primary" /></div>}>
             <Routes>
               <Route path="/" element={<Navigate to="/homepage" replace />} />
               <Route path="/login" element={<LoginPage />} />
@@ -97,6 +98,7 @@ export default function App() {
 
               <Route path="*" element={<Navigate to="/homepage" replace />} />
             </Routes>
+            </Suspense>
           </main>
         </div>
       </div>
