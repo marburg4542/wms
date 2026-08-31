@@ -250,13 +250,18 @@ export default function RackBlueprint({ rackId, highlightLevel, highlightSku, ca
     setLocation(item.sku, { sku: item.sku, rackId, level: selectedLevelRef.current, quantity: next });
   }, [rackId, setLocation]);
 
-  const removeOne = useCallback((sku) => {
+  // ถามยืนยันก่อนเสมอ — ปุ่มนี้อยู่ติดกับปุ่มย้าย กดพลาดแล้วสินค้าหลุดจากตำแหน่งทันทีโดยไม่มีอะไรเตือน
+  const removeOne = useCallback(async (sku) => {
     const level = selectedLevelRef.current;
-    setLocation(
-      sku,
-      { sku, rackId, level, quantity: 0 },
-      isFloorRef.current ? `เอา ${sku} ออกจาก ${rackNameRef.current} แล้ว` : `เอา ${sku} ออกจากเลเวล ${level} แล้ว`
-    );
+    const where = isFloorRef.current ? rackNameRef.current : `เลเวล ${level}`;
+    const ok = await confirmDialog({
+      title: `เอา ${sku} ออกจาก${where}`,
+      message: 'ยอดคงเหลือของสินค้าไม่เปลี่ยน และตำแหน่งอื่นของสินค้านี้ไม่ถูกแตะ',
+      confirmText: 'เอาออก',
+      danger: true
+    });
+    if (!ok) return;
+    setLocation(sku, { sku, rackId, level, quantity: 0 }, `เอา ${sku} ออกจาก${where} แล้ว`);
   }, [rackId, setLocation]);
 
   // เปิดป๊อปอัพย้าย พร้อมตั้งจำนวนตั้งต้น = ของที่มีอยู่ตรงนี้ (กดย้ายได้เลยโดยไม่ต้องแก้)
@@ -361,16 +366,21 @@ export default function RackBlueprint({ rackId, highlightLevel, highlightSku, ca
                 )}
               </div>
             )}
-            {canEdit && selected.size > 0 && (
-              <div className="mb-2 flex flex-wrap items-center gap-2 rounded-xl border border-primary/40 bg-primary/5 p-2">
-                <span className="text-sm font-bold">เลือกไว้ {selected.size} รายการ</span>
-                <button className="btn btn-sm btn-warning gap-1" disabled={saving} onClick={() => openMove([...selected])}>
+            {/* แถบนี้ต้องแสดงตลอด ห้ามโผล่ตอนติ๊กช่องแรก — ถ้าโผล่ทีหลังตารางจะถูกดันลงราว 55px
+                ปุ่มที่ผู้ใช้กำลังเล็งจะเลื่อนหนีนิ้ว แล้วไปโดนปุ่มของแถวข้างเคียงแทน
+                ข้อความสองแบบตั้งใจให้ยาวใกล้กัน จอแคบจะได้ไม่ตัดบรรทัดต่างกันจนความสูงเปลี่ยน */}
+            {canEdit && (
+              <div className={`mb-2 flex flex-wrap items-center gap-2 rounded-xl border p-2 ${selected.size > 0 ? 'border-primary/40 bg-primary/5' : 'border-base-300 bg-base-200/40'}`}>
+                <span className={`text-sm font-bold ${selected.size > 0 ? '' : 'opacity-50'}`}>
+                  {selected.size > 0 ? `เลือกไว้ ${selected.size} รายการ` : 'ยังไม่ได้เลือกรายการ'}
+                </span>
+                <button className="btn btn-sm btn-warning gap-1" disabled={saving || selected.size === 0} onClick={() => openMove([...selected])}>
                   <FiPackage /> ย้ายที่เลือก
                 </button>
-                <button className="btn btn-sm btn-outline btn-error gap-1" disabled={saving} onClick={removeSelected}>
+                <button className="btn btn-sm btn-outline btn-error gap-1" disabled={saving || selected.size === 0} onClick={removeSelected}>
                   <FiTrash2 /> เอาออกที่เลือก
                 </button>
-                <button className="btn btn-sm btn-ghost" onClick={() => setSelected(new Set())}>ล้างการเลือก</button>
+                <button className="btn btn-sm btn-ghost" disabled={selected.size === 0} onClick={() => setSelected(new Set())}>ล้างการเลือก</button>
               </div>
             )}
             <div className="overflow-x-auto rounded-xl border border-base-300">
@@ -468,7 +478,7 @@ export default function RackBlueprint({ rackId, highlightLevel, highlightSku, ca
           items: moving.items.map((row) => (row.sku === sku ? { ...row, quantity: value } : row))
         });
         return (
-          <div className="fixed inset-0 z-[110] flex items-center justify-center bg-base-300/40 p-4 backdrop-blur-md" onClick={() => !saving && setMoving(null)}>
+          <div className="fixed inset-0 z-[110] flex items-center justify-center bg-base-300/40 p-4 backdrop-blur-md" onClick={(event) => { event.stopPropagation(); if (!saving) setMoving(null); }}>
             <section className="glass-modal max-h-[88vh] w-full max-w-2xl overflow-hidden rounded-2xl" onClick={(event) => event.stopPropagation()}>
               <header className="flex items-start gap-3 border-b border-base-300 p-5">
                 <FiPackage className="mt-1 shrink-0 text-warning" />
