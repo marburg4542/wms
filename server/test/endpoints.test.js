@@ -104,4 +104,85 @@ test('เส้นทางหยิบของแสดงครบทุก�
   assert.equal(route.stops, 3, 'ต้องนับจุดแวะครบ');
 });
 
+// ---- คืนของที่รับไปแล้ว ----
+// เดินเส้นทางจริงทั้งเส้น: อนุมัติ → ส่งมอบ (ตัดสต็อก) → คืน → ตรวจว่ายอดกลับมา
+test('คืนของที่รับไปแล้ว: ยอดกลับเข้าสต็อก และคืนซ้ำเกินไม่ได้', async () => {
+  const made2 = await callOk('createProduct', products.createProduct, {
+    body: { name: 'สินค้าคืนของ', groupId: '01', groupName: 'ทดสอบ', unit: 'ชิ้น', latestCost: 10, initialStock: 30, rackId: shelf.rack.id, storageLevel: 2 }
+  });
+  const sku2 = made2.sku;
+  const req = await callOk('createOutboundRequest', transactions.createOutboundRequest, {
+    body: { project: 'โครงการทดสอบ', items: [{ productId: sku2, quantity: 10 }] },
+    user: { username: 'tester', role: 'Operator' }
+  });
+  const txRow = db.prepare('SELECT id FROM wms_transactions WHERE transactionId = ?').get(req.transactionId);
+
+  await callOk('resolveTransaction', transactions.resolveTransaction, {
+    params: { id: String(txRow.id) },
+    body: { action: 'APPROVE', updatedItems: [{ productId: sku2, approvedQty: 10 }] }
+  });
+
+  const stockBefore = db.prepare('SELECT stock_balance b FROM warehouse_balance WHERE item_id = ?').get(sku2).b;
+  await callOk('markPickedUp', transactions.markPickedUp, { params: { id: String(txRow.id) } });
+  const afterPickup = db.prepare('SELECT stock_balance b FROM warehouse_balance WHERE item_id = ?').get(sku2).b;
+  assert.equal(afterPickup, stockBefore - 10, 'ส่งมอบแล้วต้องตัดสต็อก 10');
+
+  // คืนยังไม่ได้ถ้าไม่ระบุเหตุผล
+  const noReason = await call(transactions.returnItems, {
+    params: { id: String(txRow.id) },
+    body: { items: [{ productId: sku2, quantity: 1 }] }
+  });
+  assert.equal(noReason.success, false, 'ต้องบังคับกรอกเหตุผล');
+
+  // คืน 4 ชิ้น: ใช้ได้ 3 ชำรุด 1 (ยิงแยกใบ เพราะหนึ่งสินค้าใส่ได้ครั้งละสภาพเดียว)
+  await callOk('returnItems (ใช้ได้)', transactions.returnItems, {
+    params: { id: String(txRow.id) },
+    body: { items: [{ productId: sku2, quantity: 3, condition: 'usable' }], reason: 'เบิกเกินความต้องการ' }
+  });
+  assert.equal(
+    db.prepare('SELECT stock_balance b FROM warehouse_balance WHERE item_id = ?').get(sku2).b,
+    afterPickup + 3,
+    'ของสภาพใช้ได้ต้องกลับเข้าสต็อก'
+  );
+
+  await callOk('returnItems (ชำรุด)', transactions.returnItems, {
+    params: { id: String(txRow.id) },
+    body: { items: [{ productId: sku2, quantity: 1, condition: 'damaged' }], reason: 'ตกแตกระหว่างใช้งาน' }
+  });
+  assert.equal(
+    db.prepare('SELECT stock_balance b FROM warehouse_balance WHERE item_id = ?').get(sku2).b,
+    afterPickup + 3,
+    'ของชำรุดต้องไม่ถูกนับกลับเข้าสต็อก'
+  );
+
+  // รับไป 10 คืนแล้ว 4 (ใช้ได้ 3 + ชำรุด 1) เหลือคืนได้อีก 6
+  const tooMany = await call(transactions.returnItems, {
+    params: { id: String(txRow.id) },
+    body: { items: [{ productId: sku2, quantity: 7, condition: 'usable' }], reason: 'คืนเกิน' }
+  });
+  assert.equal(tooMany.success, false, 'คืนเกินยอดที่รับไปต้องถูกปฏิเสธ');
+  assert.match(tooMany.message, /6/, 'ต้องบอกด้วยว่าคืนได้อีกเท่าไร');
+
+  // ของคืนต้องไม่สร้าง lot ราคาใหม่ ไม่งั้นประวัติราคาเพี้ยน
+  const lots = await callOk('getPriceHistory', products.getPriceHistory, { params: { id: sku2 } });
+  assert.equal(lots.lots.filter((lot) => String(lot.note || '').startsWith('คืนจากใบ')).length, 0,
+    'ของคืนต้องไม่โผล่ในประวัติราคาต่อ lot');
+
+  // endpoint ค้นหาใบที่คืนได้ต้องเห็นใบนี้ และบอกยอดคงเหลือที่คืนได้ถูกต้อง
+  const list = await callOk('getReturnableTransactions', transactions.getReturnableTransactions, { query: {} });
+  const found = list.transactions.find((tx) => tx.id === txRow.id);
+  assert.ok(found, 'ใบที่ยังคืนได้ต้องขึ้นในรายการค้นหา');
+  assert.equal(found.items.find((item) => item.productId === sku2).returnable, 6);
+});
+
+test('คืนของจากใบที่ยังไม่ส่งมอบไม่ได้', async () => {
+  const pending = db.prepare('SELECT id FROM wms_transactions WHERE transactionId = ?').get(outbound.transactionId);
+  const res = await call(transactions.returnItems, {
+    params: { id: String(pending.id) },
+    body: { items: [{ productId: sku, quantity: 1 }], reason: 'ทดสอบ' }
+  });
+  assert.equal(res.success, false, 'ใบที่ยังไม่ส่งมอบต้องคืนไม่ได้');
+  assert.match(res.message, /ยกเลิกจอง/, 'ต้องบอกทางเลือกที่ถูกต้องให้ผู้ใช้');
+});
+
 test.after(() => temp.cleanup(db));

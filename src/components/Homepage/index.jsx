@@ -36,7 +36,17 @@ export default function Homepage() {
   const [itemsModal, setItemsModal] = useState(null); // ใบเบิกที่กำลังดูรายการอะไหล่ (recheck ตอนส่งมอบ)
   const [cancelResv, setCancelResv] = useState(null);   // ใบที่กำลังยกเลิกการจอง
   const [cancelReason, setCancelReason] = useState('');
-  useBodyScrollLock(!!approveModal || exportModalOpen || !!itemsModal || !!cancelResv); // freeze พื้นหลังตอนเปิด modal
+
+  // คืนของที่รับไปแล้ว — ต้องเลือกใบเบิกต้นทางก่อนเสมอ จะได้กันไม่ให้คืนเกินยอดที่รับไป
+  const [returnOpen, setReturnOpen] = useState(false);
+  const [returnSearch, setReturnSearch] = useState('');
+  const [returnList, setReturnList] = useState([]);
+  const [returnTx, setReturnTx] = useState(null);      // ใบที่เลือกแล้ว
+  const [returnLines, setReturnLines] = useState({});  // productId -> { qty, condition }
+  const [returnReason, setReturnReason] = useState('');
+  const [returnBusy, setReturnBusy] = useState(false);
+
+  useBodyScrollLock(!!approveModal || exportModalOpen || !!itemsModal || !!cancelResv || returnOpen); // freeze พื้นหลังตอนเปิด modal
 
   const offset = new Date().getTimezoneOffset() * 60000;
   const todayStr = new Date(Date.now() - offset).toISOString().slice(0, 10);
@@ -203,6 +213,62 @@ export default function Homepage() {
       }
     } catch (err) {
       toast.error(err?.message || 'ยกเลิกการจองไม่สำเร็จ');
+    }
+  };
+
+  // ค้นหาใบที่ยังคืนของได้ (หน่วงไว้ 300ms กันยิงทุกตัวอักษร)
+  useEffect(() => {
+    if (!returnOpen || returnTx) return;
+    let alive = true;
+    const timer = setTimeout(async () => {
+      const term = returnSearch.trim();
+      const res = await fetchApi(`/api/transactions/returnable${term ? `?search=${encodeURIComponent(term)}` : ''}`).catch(() => ({}));
+      if (alive && res.success) setReturnList(res.transactions);
+    }, 300);
+    return () => { alive = false; clearTimeout(timer); };
+  }, [returnOpen, returnTx, returnSearch]);
+
+  const closeReturn = () => {
+    setReturnOpen(false);
+    setReturnTx(null);
+    setReturnLines({});
+    setReturnReason('');
+    setReturnSearch('');
+    setReturnList([]);
+  };
+
+  // เลือกใบแล้วตั้งจำนวนตั้งต้นเป็น 0 ทุกรายการ — ผู้ใช้กรอกเองว่าคืนกี่ชิ้น
+  // (ต่างจากหน้าย้ายสินค้าที่ตั้งเต็มจำนวนให้ เพราะการคืนมักคืนไม่ครบ)
+  const pickReturnTx = (tx) => {
+    setReturnTx(tx);
+    setReturnLines(Object.fromEntries(
+      tx.items.filter((item) => item.returnable > 0).map((item) => [item.productId, { qty: '', condition: 'usable' }])
+    ));
+  };
+
+  const submitReturn = async () => {
+    const reason = returnReason.trim();
+    if (!reason) return toast.error('กรุณาระบุเหตุผลที่คืนของ');
+    const items = Object.entries(returnLines)
+      .map(([productId, line]) => ({ productId, quantity: Number(line.qty), condition: line.condition }))
+      .filter((line) => Number.isFinite(line.quantity) && line.quantity > 0);
+    if (items.length === 0) return toast.error('ระบุจำนวนที่จะคืนอย่างน้อย 1 รายการ');
+
+    setReturnBusy(true);
+    try {
+      const res = await fetchApi(`/api/transactions/${returnTx.id}/return`, {
+        method: 'POST',
+        body: JSON.stringify({ items, reason })
+      });
+      if (res.success) {
+        toast.success(res.message, { duration: 7000 });
+        closeReturn();
+        loadDashboardData();
+      }
+    } catch (err) {
+      toast.error(err?.message || 'คืนของไม่สำเร็จ');
+    } finally {
+      setReturnBusy(false);
     }
   };
 
@@ -471,7 +537,14 @@ export default function Homepage() {
 
         {/* ประวัติการทำรายการ */}
         <div className="card glass-panel p-5">
-          <h2 className="text-lg font-bold mb-4 flex items-center gap-2"><span>🕒</span> ประวัติการทำรายการ (วันนี้)</h2>
+          <div className="mb-4 flex flex-wrap items-center justify-between gap-2">
+            <h2 className="text-lg font-bold flex items-center gap-2"><span>🕒</span> ประวัติการทำรายการ (วันนี้)</h2>
+            {isAdmin && (
+              <button className="btn btn-sm btn-outline gap-1" onClick={() => setReturnOpen(true)} title="รับของกลับเข้าคลัง จากใบเบิกที่ส่งมอบไปแล้ว">
+                ↩️ คืนของ
+              </button>
+            )}
+          </div>
           <div className="overflow-x-auto max-h-100 overflow-y-auto">
             <table className="table table-xs w-full">
               <thead className="sticky top-0 bg-base-100/80 backdrop-blur-md z-10">
@@ -657,6 +730,109 @@ export default function Homepage() {
               <button className="btn btn-ghost" onClick={() => setCancelResv(null)}>ปิด</button>
               <button className="btn btn-error text-white" disabled={!cancelReason.trim()} onClick={submitCancelReservation}>ยกเลิกการจอง</button>
             </div>
+          </div>
+        </div>
+      )}
+
+      {/* คืนของที่รับไปแล้ว — 2 ขั้นตอนในหน้าต่างเดียว: หาใบเบิกก่อน แล้วค่อยเลือกรายการ */}
+      {returnOpen && (
+        <div className="fixed inset-0 z-120 flex items-center justify-center backdrop-blur-md p-4" onClick={() => !returnBusy && closeReturn()}>
+          <div className="glass-modal flex max-h-[88vh] w-full max-w-2xl flex-col rounded-2xl" onClick={e => e.stopPropagation()}>
+            <div className="border-b border-base-200 p-5 pb-3">
+              <h3 className="text-lg font-bold">↩️ คืนของเข้าคลัง</h3>
+              <p className="mt-1 text-xs text-base-content/60">
+                {returnTx
+                  ? `${returnTx.transactionId} · โปรเจกต์ ${returnTx.project || '-'} · ผู้ขอ ${returnTx.requesterUsername || '-'}`
+                  : 'ใช้กับของที่ส่งมอบไปแล้วแต่ไม่ได้ใช้ — ถ้าใบยังไม่มีคนมารับ ให้ใช้ปุ่ม "ยกเลิกจอง" แทน'}
+              </p>
+            </div>
+
+            {!returnTx ? (
+              <>
+                <div className="p-5 pb-2">
+                  <input
+                    autoFocus
+                    className="input input-bordered w-full"
+                    placeholder="ค้นหาด้วยรหัสใบเบิก ชื่อผู้ขอ หรือโครงการ"
+                    value={returnSearch}
+                    onChange={e => setReturnSearch(e.target.value)}
+                  />
+                  <p className="mt-2 text-[11px] text-base-content/50">แสดงเฉพาะใบที่ส่งมอบแล้วและยังคืนได้ (ล่าสุด 30 ใบ)</p>
+                </div>
+                <div className="flex-1 overflow-y-auto px-5 pb-4">
+                  {returnList.length === 0 ? (
+                    <div className="py-10 text-center text-sm opacity-50">ไม่พบใบเบิกที่คืนของได้</div>
+                  ) : returnList.map((tx) => (
+                    <button
+                      key={tx.id}
+                      className="mb-2 flex w-full items-center gap-3 rounded-xl border border-base-300 p-3 text-left hover:bg-base-200/50"
+                      onClick={() => pickReturnTx(tx)}
+                    >
+                      <div className="min-w-0 flex-1">
+                        <div className="font-mono text-xs font-bold">{tx.transactionId}</div>
+                        <div className="truncate text-xs text-base-content/60">
+                          {tx.requesterUsername || '-'} · {tx.project || 'ไม่ระบุโครงการ'} · ส่งมอบ {new Date(tx.pickedUpAt).toLocaleDateString('th-TH')}
+                        </div>
+                      </div>
+                      <span className="badge badge-ghost badge-sm whitespace-nowrap">คืนได้ {tx.items.filter(i => i.returnable > 0).length} รายการ</span>
+                    </button>
+                  ))}
+                </div>
+              </>
+            ) : (
+              <>
+                <div className="flex-1 overflow-y-auto p-5 pt-3">
+                  <div className="mb-2 text-xs font-semibold text-base-content/60">ระบุจำนวนที่คืน (เว้นว่างหรือ 0 = ไม่คืนรายการนั้น)</div>
+                  {returnTx.items.filter(item => item.returnable > 0).map((item) => (
+                    <div key={item.productId} className="mb-2 flex flex-wrap items-center gap-2 rounded-lg bg-base-200/50 p-2">
+                      <img src={getImg(item.imageUrl)} alt={item.sku} className="h-9 w-9 rounded object-cover" />
+                      <div className="min-w-0 flex-1">
+                        <div className="font-mono text-xs font-semibold">{item.sku}</div>
+                        <div className="truncate text-xs text-base-content/60">{item.productName}</div>
+                      </div>
+                      <span className="whitespace-nowrap text-[11px] text-base-content/50">
+                        รับไป {item.approvedQty}{item.returnedQty > 0 ? ` · คืนแล้ว ${item.returnedQty}` : ''} · คืนได้ {item.returnable}
+                      </span>
+                      <input
+                        type="number" min="0" max={item.returnable}
+                        className="input input-bordered input-sm w-20 font-bold"
+                        value={returnLines[item.productId]?.qty ?? ''}
+                        onChange={e => setReturnLines(prev => ({ ...prev, [item.productId]: { ...prev[item.productId], qty: e.target.value } }))}
+                      />
+                      <select
+                        className="select select-bordered select-sm w-28"
+                        value={returnLines[item.productId]?.condition ?? 'usable'}
+                        onChange={e => setReturnLines(prev => ({ ...prev, [item.productId]: { ...prev[item.productId], condition: e.target.value } }))}
+                      >
+                        <option value="usable">ใช้ได้</option>
+                        <option value="damaged">ชำรุด</option>
+                      </select>
+                    </div>
+                  ))}
+                  <label className="form-control mt-3">
+                    <span className="label-text mb-1 text-xs font-bold">เหตุผลที่คืน (จำเป็น)</span>
+                    <textarea
+                      className="textarea textarea-bordered w-full"
+                      rows={2}
+                      placeholder="เช่น เบิกเกินความต้องการ / งานถูกยกเลิก / อะไหล่ไม่ตรงรุ่น"
+                      value={returnReason}
+                      onChange={e => setReturnReason(e.target.value)}
+                    />
+                  </label>
+                  <p className="mt-2 text-[11px] text-base-content/60">
+                    ของสภาพ &quot;ใช้ได้&quot; จะกลับเข้าสต็อกและไปรออยู่ที่ &quot;ยังไม่ระบุตำแหน่ง&quot; ให้ผูกตำแหน่งจัดเก็บอีกครั้ง ·
+                    ของ &quot;ชำรุด&quot; จะถูกบันทึกไว้เป็นหลักฐานแต่ไม่นับกลับเข้าสต็อก
+                  </p>
+                </div>
+                <div className="flex justify-end gap-2 border-t border-base-200 p-4">
+                  <button className="btn btn-ghost" disabled={returnBusy} onClick={() => { setReturnTx(null); setReturnLines({}); }}>ย้อนกลับ</button>
+                  <button className="btn btn-primary gap-1" disabled={returnBusy || !returnReason.trim()} onClick={submitReturn}>
+                    {returnBusy && <span className="loading loading-spinner loading-xs" />}
+                    ยืนยันการคืน
+                  </button>
+                </div>
+              </>
+            )}
           </div>
         </div>
       )}

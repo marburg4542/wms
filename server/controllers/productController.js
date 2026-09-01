@@ -540,8 +540,9 @@ export const getDashboardStats = (req, res) => {
     // input/output_date เก็บเป็น UTC (toISOString) ต้องแปลงเป็นเวลาท้องถิ่นก่อนตัดเทียบวัน
     // ไม่งั้นรายการช่วงเย็น (หลัง 17:00 เวลาไทย) จะถูกนับเป็นของวันถัดไปตามปฏิทิน UTC
     // นับเฉพาะการเคลื่อนไหวจริง — ตัดยอดยกมา (imported) และการปรับยอด (adjustment) ออก ไม่งั้นตัวเลขรับเข้า/เบิกออกวันนี้จะเพี้ยน
-    const inboundTodayRow = db.prepare(`SELECT SUM(quantity) as total FROM stock_in WHERE date(input_date, 'localtime') = ? AND COALESCE(clean_status, '') NOT IN ('imported', 'adjustment')`).get(localDate);
-    const outboundTodayRow = db.prepare(`SELECT SUM(quantity) as total FROM stock_out WHERE date(output_date, 'localtime') = ? AND COALESCE(clean_status, '') NOT IN ('imported', 'adjustment')`).get(localDate);
+    // ไม่นับของคืน ('return') เป็นรับเข้า — เป็นของเดิมที่ส่งกลับ ไม่ใช่ของใหม่เข้าคลัง
+    const inboundTodayRow = db.prepare(`SELECT SUM(quantity) as total FROM stock_in WHERE date(input_date, 'localtime') = ? AND COALESCE(clean_status, '') NOT IN ('imported', 'adjustment', 'return')`).get(localDate);
+    const outboundTodayRow = db.prepare(`SELECT SUM(quantity) as total FROM stock_out WHERE date(output_date, 'localtime') = ? AND COALESCE(clean_status, '') NOT IN ('imported', 'adjustment', 'return')`).get(localDate);
 
     const activities = db.prepare(`
       SELECT transactionId, type, requesterUsername, project, status, requestDate, resolvedDate, adminUsername

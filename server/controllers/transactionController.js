@@ -682,3 +682,199 @@ export const cancelReservation = (req, res) => {
     handleError(res, err);
   }
 };
+
+// ---------------------------------------------------------------------------
+// คืนของที่รับไปแล้ว
+//
+// ต่างจาก "ยกเลิกจอง" ตรงที่อันนั้นใช้กับใบที่ของยังไม่ออกจากคลัง (ยังไม่มีใครมารับ)
+// ส่วนอันนี้ใช้กับของที่ออกไปแล้วจริง เบิกไปแล้วไม่ได้ใช้ จึงเอากลับมาเก็บ
+//
+// ต้องอ้างใบเบิกต้นทางเสมอ ถ้าคืนแบบอิสระจะกันยอดคืนเกินไม่ได้
+// ---------------------------------------------------------------------------
+
+// รวมยอดที่เคยคืนไปแล้วของใบนี้ แยกตามสินค้า — นับทั้งของใช้ได้และของชำรุด
+// เพราะทั้งสองอย่างคือของที่ถูกส่งกลับมาแล้ว จะคืนซ้ำอีกไม่ได้
+const getReturnedSoFar = (parentTxId) => {
+  const rows = db.prepare(`
+    SELECT ri.productId, COALESCE(SUM(ri.requestedQty), 0) AS qty
+    FROM wms_transactions rt
+    JOIN wms_transaction_items ri ON ri.tx_id = rt.id
+    WHERE rt.parent_tx_id = ? AND rt.type = 'RETURN'
+    GROUP BY ri.productId
+  `).all(parentTxId);
+  return new Map(rows.map((row) => [String(row.productId), Number(row.qty)]));
+};
+
+export const returnItems = (req, res) => {
+  try {
+    const { id } = req.params;
+    const reason = String(req.body?.reason || '').trim();
+    const items = req.body?.items;
+
+    if (!Array.isArray(items) || items.length === 0) throw new ValidationError('ไม่มีรายการที่จะคืน');
+    if (!reason) throw new ValidationError('กรุณาระบุเหตุผลที่คืนของ');
+
+    const tx = db.prepare('SELECT * FROM wms_transactions WHERE id = ?').get(id);
+    if (!tx) return res.status(404).json({ success: false, message: 'ไม่พบใบเบิก' });
+    if (tx.type !== 'OUTBOUND') throw new ValidationError('คืนของได้เฉพาะใบเบิกออกเท่านั้น');
+    if (!tx.pickedUpAt) {
+      throw new ValidationError('ใบนี้ยังไม่ได้ส่งมอบ ถ้าต้องการคืนของเข้าสต็อกให้ใช้ปุ่ม "ยกเลิกจอง" แทน');
+    }
+
+    const approved = db.prepare(
+      'SELECT productId, sku, productName, imageUrl, groupId, groupName, approvedQty FROM wms_transaction_items WHERE tx_id = ? AND approvedQty > 0'
+    ).all(id);
+    const approvedByProduct = new Map(approved.map((row) => [String(row.productId), row]));
+    const returnedSoFar = getReturnedSoFar(tx.id);
+
+    // ตรวจทุกบรรทัดให้ครบก่อน แล้วค่อยเขียน — ไม่ปล่อยให้คืนได้ครึ่งใบแล้วค้าง
+    const lines = items.map((item) => {
+      const productId = normalizeSku(item.productId || item.sku);
+      const quantity = toPositiveInteger(item.quantity);
+      const condition = item.condition === 'damaged' ? 'damaged' : 'usable';
+
+      const source = approvedByProduct.get(productId);
+      if (!source) throw new ValidationError(`${productId || 'รายการที่เลือก'} ไม่ได้อยู่ในใบเบิกนี้`);
+      if (!quantity) throw new ValidationError(`จำนวนที่คืนของ ${productId} ต้องเป็นจำนวนเต็มมากกว่า 0`);
+
+      const already = returnedSoFar.get(productId) || 0;
+      const returnable = Number(source.approvedQty) - already;
+      if (quantity > returnable) {
+        throw new ValidationError(
+          returnable <= 0
+            ? `${productId} คืนครบตามที่รับไปแล้ว (รับไป ${source.approvedQty})`
+            : `${productId} คืนได้อีกไม่เกิน ${returnable} ชิ้น (รับไป ${source.approvedQty} คืนแล้ว ${already})`
+        );
+      }
+      return { ...source, productId, quantity, condition };
+    });
+
+    const duplicates = lines.map((line) => line.productId).filter((sku, i, all) => all.indexOf(sku) !== i);
+    if (duplicates.length > 0) throw new ValidationError(`มีสินค้าซ้ำในรายการที่คืน: ${[...new Set(duplicates)].join(', ')}`);
+
+    const now = new Date().toISOString();
+    const transactionId = `RET-${Date.now()}`;
+    const usable = lines.filter((line) => line.condition === 'usable');
+    const damaged = lines.filter((line) => line.condition === 'damaged');
+
+    db.transaction(() => {
+      // ของสภาพใช้ได้เท่านั้นที่กลับเข้าสต็อก
+      //
+      // ไม่ใส่ unit_cost เพราะการคืนไม่ใช่การซื้อเข้า — ถ้าใส่จะกลายเป็น lot ราคาใหม่
+      // แล้วประวัติราคาต่อ lot (getPriceHistory กรอง unit_cost IS NOT NULL) จะเพี้ยน
+      //
+      // clean_status = 'return' ทำให้หน้าวิเคราะห์แยกของคืนออกจากยอด "รับเข้า" ได้
+      const insertStockIn = db.prepare(`
+        INSERT INTO stock_in (item_id, quantity, input_date, unit_cost, project, note, created_by, clean_status)
+        VALUES (?, ?, ?, NULL, ?, ?, ?, 'return')
+      `);
+      for (const line of usable) {
+        insertStockIn.run(line.productId, line.quantity, now, tx.project, `คืนจากใบ ${tx.transactionId}: ${reason}`, req.user.username);
+      }
+
+      const info = db.prepare(`
+        INSERT INTO wms_transactions
+          (transactionId, type, requesterUsername, project, status, requestDate, resolvedDate, adminUsername, adminMessage, pickedUpAt, parent_tx_id)
+        VALUES (?, 'RETURN', ?, ?, 'Approved', ?, ?, ?, ?, ?, ?)
+      `).run(transactionId, tx.requesterUsername, tx.project, now, now, req.user.username, reason, now, tx.id);
+
+      const insertItem = db.prepare(`
+        INSERT INTO wms_transaction_items
+          (tx_id, productId, sku, productName, imageUrl, groupId, groupName, requestedQty, approvedQty, status, item_condition)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'Approved', ?)
+      `);
+      for (const line of lines) {
+        // approvedQty = 0 สำหรับของชำรุด เพื่อให้อ่านออกทันทีว่าไม่ได้กลับเข้าสต็อก
+        // ส่วน requestedQty เก็บจำนวนที่ส่งกลับมาจริงเสมอ ใช้เป็นฐานคำนวณยอดคืนสะสม
+        insertItem.run(
+          info.lastInsertRowid, line.productId, line.sku || line.productId, line.productName,
+          line.imageUrl, line.groupId, line.groupName,
+          line.quantity, line.condition === 'usable' ? line.quantity : 0, line.condition
+        );
+      }
+
+      logAudit(req.user.username, 'transaction.return', 'transaction', transactionId, {
+        parentTransactionId: tx.transactionId,
+        reason,
+        usable: usable.map((line) => ({ sku: line.productId, qty: line.quantity })),
+        damaged: damaged.map((line) => ({ sku: line.productId, qty: line.quantity }))
+      });
+    })();
+
+    broadcast('transactions');
+    broadcast('products');
+
+    const parts = [];
+    if (usable.length > 0) parts.push(`คืนเข้าสต็อก ${usable.reduce((sum, line) => sum + line.quantity, 0)} ชิ้น`);
+    if (damaged.length > 0) parts.push(`บันทึกของชำรุด ${damaged.reduce((sum, line) => sum + line.quantity, 0)} ชิ้น (ไม่นับเข้าสต็อก)`);
+    res.status(201).json({
+      success: true,
+      transactionId,
+      message: `${parts.join(' · ')} — ของที่คืนเข้าสต็อกจะไปรออยู่ที่ "ยังไม่ระบุตำแหน่ง" ให้ผูกตำแหน่งจัดเก็บอีกครั้ง`
+    });
+  } catch (err) {
+    handleError(res, err);
+  }
+};
+
+// ค้นหาใบเบิกที่ยังคืนของได้ — หน้าแดชบอร์ดแสดงประวัติแค่ของวันนี้
+// ถ้าไม่มีช่องค้นหาย้อนหลัง จะคืนของจากใบเก่าไม่ได้เลย
+export const getReturnableTransactions = (req, res) => {
+  try {
+    const search = String(req.query.search || '').trim().toLowerCase();
+    const params = {};
+    let searchSql = '';
+    if (search) {
+      searchSql = `AND (LOWER(t.transactionId) LIKE @q OR LOWER(t.requesterUsername) LIKE @q OR LOWER(COALESCE(t.project, '')) LIKE @q)`;
+      params.q = `%${search}%`;
+    }
+
+    const txs = db.prepare(`
+      SELECT t.id, t.transactionId, t.requesterUsername, t.project, t.pickedUpAt, t.adminUsername
+      FROM wms_transactions t
+      WHERE t.type = 'OUTBOUND' AND t.pickedUpAt IS NOT NULL ${searchSql}
+      ORDER BY t.pickedUpAt DESC
+      LIMIT 30
+    `).all(params);
+    if (txs.length === 0) return res.json({ success: true, transactions: [] });
+
+    const ids = txs.map((tx) => tx.id);
+    const placeholders = ids.map(() => '?').join(',');
+    const items = db.prepare(`
+      SELECT ti.tx_id, ti.productId, ti.sku, ti.productName, ti.approvedQty,
+             COALESCE(NULLIF(ti.imageUrl, ''), ps.image_url, '') AS imageUrl
+      FROM wms_transaction_items ti
+      LEFT JOIN product_settings ps ON ps.item_id = ti.productId
+      WHERE ti.tx_id IN (${placeholders}) AND ti.approvedQty > 0
+    `).all(...ids);
+
+    const returned = db.prepare(`
+      SELECT rt.parent_tx_id, ri.productId, COALESCE(SUM(ri.requestedQty), 0) AS qty
+      FROM wms_transactions rt
+      JOIN wms_transaction_items ri ON ri.tx_id = rt.id
+      WHERE rt.type = 'RETURN' AND rt.parent_tx_id IN (${placeholders})
+      GROUP BY rt.parent_tx_id, ri.productId
+    `).all(...ids);
+    const returnedMap = new Map(returned.map((row) => [`${row.parent_tx_id}|${row.productId}`, Number(row.qty)]));
+
+    const byTx = new Map(txs.map((tx) => [tx.id, { ...tx, items: [] }]));
+    for (const item of items) {
+      const already = returnedMap.get(`${item.tx_id}|${item.productId}`) || 0;
+      byTx.get(item.tx_id).items.push({
+        productId: item.productId,
+        sku: item.sku || item.productId,
+        productName: item.productName,
+        imageUrl: item.imageUrl,
+        approvedQty: Number(item.approvedQty),
+        returnedQty: already,
+        returnable: Number(item.approvedQty) - already
+      });
+    }
+
+    // ใบที่คืนครบทุกรายการแล้วไม่ต้องแสดง จะได้ไม่รกรายการค้นหา
+    const transactions = [...byTx.values()].filter((tx) => tx.items.some((item) => item.returnable > 0));
+    res.json({ success: true, transactions });
+  } catch (err) {
+    handleError(res, err);
+  }
+};

@@ -7,7 +7,9 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 // การเคลื่อนไหว "จริง" เท่านั้น — ตัดยอดยกมา (imported) และการปรับยอด (adjustment) ออก
 // ไม่งั้น trend จะเพี้ยนจากยอด snapshot ตอนย้ายข้อมูล และการแก้ยอดนับสต็อก
-const REAL_MOVE = "COALESCE(clean_status, '') NOT IN ('imported', 'adjustment')";
+// 'return' = ของที่เบิกไปแล้วส่งกลับคืน ไม่ใช่ของที่รับเข้ามาใหม่
+// ถ้านับรวมจะทำให้ยอด "รับเข้า" สูงเกินจริง (ของชิ้นเดิมถูกนับสองรอบ)
+const REAL_MOVE = "COALESCE(clean_status, '') NOT IN ('imported', 'adjustment', 'return')";
 
 // อ่านผลพยากรณ์ที่ ML service (Python) เขียนไว้ — ไฟล์ JSON เดียว ไม่ผูก process กัน
 // ตั้ง path ผ่าน ML_FORECAST_PATH ใน .env ได้ (ค่าเริ่มต้น: ml/state/forecasts.json ที่ root โปรเจกต์)

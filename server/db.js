@@ -665,8 +665,22 @@ if (db.prepare('SELECT COUNT(*) c FROM item_locations').get().c === 0) {
 }
 
 // Index สำหรับคอลัมน์ที่ JOIN/กรองบ่อย — จำเป็นเมื่อข้อมูลสะสมหลักหมื่น/แสนแถว
+// Migration: ฟีเจอร์คืนของที่รับไปแล้ว
+//
+// parent_tx_id ผูกใบคืนกลับไปยังใบเบิกต้นทาง — ต้องรู้ว่าคืนมาจากใบไหน
+// จึงจะกันไม่ให้คืนเกินจำนวนที่รับไปได้
+//
+// item_condition บอกสภาพของที่คืน ('usable' | 'damaged')
+// ของชำรุดถูกบันทึกไว้เป็นหลักฐาน แต่ไม่ถูกนับกลับเข้าสต็อก
+//
+// ตั้งใจไม่เก็บ "คืนไปแล้วกี่ชิ้น" เป็นคอลัมน์ — คำนวณสดจากใบคืนที่ผูกอยู่
+// ข้อมูลสองที่จึงไม่มีทางขัดกันเอง
+addCol('wms_transactions', 'parent_tx_id', 'INTEGER');
+addCol('wms_transaction_items', 'item_condition', 'TEXT');
+
 // (SQLite ไม่สร้าง index ให้ foreign key อัตโนมัติ)
 db.exec(`
+  CREATE INDEX IF NOT EXISTS idx_tx_parent ON wms_transactions(parent_tx_id);
   CREATE INDEX IF NOT EXISTS idx_tx_items_tx_id ON wms_transaction_items(tx_id);
   CREATE INDEX IF NOT EXISTS idx_tx_items_product ON wms_transaction_items(productId);
   CREATE INDEX IF NOT EXISTS idx_stock_in_item ON stock_in(item_id);

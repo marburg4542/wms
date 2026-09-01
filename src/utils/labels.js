@@ -17,7 +17,7 @@ export const txStatusLabel = (status) => ({
 }[status] || status);
 
 export const stockStatusLabel = (status) => ({
-  'Active': 'พร้อมเบิก',
+  'Active': 'เบิกได้',
   'Low Stock': 'สต็อกต่ำ',
   'Out of Stock': 'หมดสต็อก'
 }[status] || status);
