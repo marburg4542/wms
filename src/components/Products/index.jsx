@@ -3,7 +3,7 @@ import { Link, useSearchParams } from 'react-router-dom';
 import toast from 'react-hot-toast';
 import { fetchApi, getAssetUrl } from '../../utils/api';
 import { parseCsv, toCsv } from '../../utils/csv';
-import { locationLabel, stockStatusLabel } from '../../utils/labels';
+import { locationLabel, stockStatusLabel, stockStatusTone } from '../../utils/labels';
 import { onServerEvent } from '../../utils/events';
 import BarcodeScanner from '../BarcodeScanner';
 import { isCameraScanDevice } from '../../utils/device';
@@ -590,7 +590,7 @@ export default function Products() {
                 <img src={getAssetUrl(item.imageUrl) || imageFallback} alt={item.name} loading="lazy" decoding="async" className="object-cover w-full h-full group-hover:scale-105 transition-transform duration-500" />
                 <div className="absolute top-2 right-2">
                   {item.isActive
-                    ? <span className={`badge font-semibold text-white shadow-sm ${item.stock > item.minStock ? 'badge-success' : item.stock > 0 ? 'badge-warning' : 'badge-error'}`}>{stockStatusLabel(item.status)}</span>
+                    ? <span className={`badge whitespace-nowrap font-semibold text-white shadow-sm ${stockStatusTone(item.status)}`}>{stockStatusLabel(item.status)}</span>
                     : <span className="badge badge-neutral font-semibold shadow-sm">ปิดใช้งาน</span>}
                 </div>
               </figure>

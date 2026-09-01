@@ -2,7 +2,7 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { useSearchParams, Link } from 'react-router-dom';
 import { fetchApi, getAssetUrl } from '../../utils/api';
-import { locationLabel, stockStatusLabel } from '../../utils/labels';
+import { locationLabel, stockStatusLabel, stockStatusTone } from '../../utils/labels';
 import { onServerEvent } from '../../utils/events';
 import BarcodeScanner from '../BarcodeScanner';
 import { isCameraScanDevice } from '../../utils/device';
@@ -342,7 +342,7 @@ export default function Inventory() {
             <div className="overflow-x-auto hidden md:block">
               <table className="table table-sm w-full">
                 <thead className="bg-base-200/50">
-                  <tr><th>รูปภาพ</th><th>รหัสสินค้า</th><th>ชื่อสินค้า</th><th>หมวดหมู่</th><th>คงเหลือ</th><th>จองแล้ว</th><th>เบิกได้</th><th>สถานะ</th>{canWithdraw && <th>เบิก</th>}</tr>
+                  <tr><th>รูปภาพ</th><th>รหัสสินค้า</th><th>ชื่อสินค้า</th><th>หมวดหมู่</th><th>คงเหลือ</th><th>จองแล้ว</th><th>เบิกได้</th><th className="whitespace-nowrap">สถานะ</th>{canWithdraw && <th>เบิก</th>}</tr>
                 </thead>
                 <tbody>
                   {filteredData.map((item) => (
@@ -371,7 +371,7 @@ export default function Inventory() {
                         )}
                       </td>
                       {/* ตาราง desktop ใช้ label สั้น 'หมด' (มือถือ/รายงานยังใช้คำเต็มจาก stockStatusLabel) */}
-                      <td><span className={`badge badge-sm text-white ${item.stock > 20 ? 'badge-success' : item.stock > 0 ? 'badge-warning' : 'badge-error'}`}>{item.stock === 0 ? 'หมด' : stockStatusLabel(item.status)}</span></td>
+                      <td><span className={`badge badge-sm whitespace-nowrap text-white ${stockStatusTone(item.status)}`}>{item.stock === 0 ? 'หมด' : stockStatusLabel(item.status)}</span></td>
                       {canWithdraw && (
                         <td>
                           <button onClick={() => addToCart(item)} disabled={availableOf(item) <= 0} className="btn btn-primary btn-xs">เพิ่ม</button>
@@ -403,7 +403,7 @@ export default function Inventory() {
                           ? `เบิกได้ ${availableOf(item)} (โควตา ${selectedProject} = ${item.stagingQuota})`
                           : Number(item.reserved) > 0 ? `กันไว้ ${item.reserved} · เบิกได้ ${availableOf(item)}` : ''}
                       </span>
-                      <span className={`badge badge-xs text-white ${item.stock > 20 ? 'badge-success' : item.stock > 0 ? 'badge-warning' : 'badge-error'}`}>{stockStatusLabel(item.status)}</span>
+                      <span className={`badge badge-xs whitespace-nowrap text-white ${stockStatusTone(item.status)}`}>{stockStatusLabel(item.status)}</span>
                     </div>
                   </div>
                   {canWithdraw && (
