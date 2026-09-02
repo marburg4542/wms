@@ -60,9 +60,18 @@ export default function Inventory() {
   const [newCategoryName, setNewCategoryName] = useState('');
   const [mergeFrom, setMergeFrom] = useState('');
   const [mergeTo, setMergeTo] = useState('');
+  const [preview, setPreview] = useState(null); // รูปที่กำลังเปิดดูขนาดใหญ่ { url, sku, name, location }
   const isManager = ['Admin', 'Manager'].includes(currentUser.role);
 
-  useBodyScrollLock(cartModal || scanOpen || projectModal || categoryModal); // freeze พื้นหลังตอนเปิด modal
+  useBodyScrollLock(cartModal || scanOpen || projectModal || categoryModal || !!preview); // freeze พื้นหลังตอนเปิด modal
+
+  // ปิดด้วย Esc สำหรับคนใช้คีย์บอร์ด (มือถือแตะพื้นหลัง)
+  useEffect(() => {
+    if (!preview) return;
+    const onKey = (e) => { if (e.key === 'Escape') setPreview(null); };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [preview]);
 
   // ค้นหาผ่านฝั่ง server เพื่อให้เจอสินค้าทุกตัว ไม่ติดเพดานจำนวนรายการที่โหลดมาแสดง
   // silent = รีเฟรชเบื้องหลังโดยไม่โชว์ spinner (ใช้ตอน poll อัตโนมัติ)
@@ -140,6 +149,21 @@ export default function Inventory() {
 
   // ยอดที่เบิกได้จริง = คงเหลือ − ที่ถูกจองให้ใบเบิกที่อนุมัติแล้วรอรับของ
   const availableOf = (product) => Number(product.available ?? product.stock ?? 0);
+
+  // เปิดรูปใหญ่คาหน้าเดิม — พนักงานเทียบของตรงหน้ากับรูปได้โดยไม่หลุดจากรายการ/ตัวกรองที่ตั้งไว้
+  // รายการในตะกร้าเก็บชื่อไว้คีย์ productName และไม่มีข้อมูลตำแหน่ง จึง fallback ให้ครบทั้งสองแบบ
+  const openPreview = (item) => {
+    // รายการในตะกร้าเก็บ "ยอดที่เบิกได้ ณ ตอนหยิบใส่" ไว้ในคีย์ stock จึงเอามาโชว์เป็นคงเหลือไม่ได้ (จะผิด)
+    const fromCart = item.productId !== undefined;
+    setPreview({
+      url: getImg(item.imageUrl),
+      sku: item.sku,
+      name: item.name || item.productName,
+      location: locationLabel(item),
+      stock: fromCart ? null : item.stock,
+      available: availableOf(item),
+    });
+  };
 
   const addToCart = (product) => {
     const available = availableOf(product);
@@ -350,7 +374,11 @@ export default function Inventory() {
                       <td>
                         <div className="avatar">
                           <div className="w-10 h-10 rounded bg-base-300">
-                            <img src={getImg(item.imageUrl)} crossOrigin="anonymous" alt={item.sku} loading="lazy" decoding="async" width="40" height="40" />
+                            <button type="button" onClick={() => openPreview(item)} disabled={!item.imageUrl}
+                              title={item.imageUrl ? 'กดเพื่อดูรูปใหญ่' : 'ไม่มีรูป'}
+                              className={`w-full h-full ${item.imageUrl ? 'cursor-zoom-in' : ''}`}>
+                              <img src={getImg(item.imageUrl)} crossOrigin="anonymous" alt={item.sku} loading="lazy" decoding="async" width="40" height="40" />
+                            </button>
                           </div>
                         </div>
                       </td>
@@ -389,7 +417,11 @@ export default function Inventory() {
                 <div key={item.id} className="flex items-center gap-3 p-3">
                   <div className="avatar shrink-0">
                     <div className="w-14 h-14 rounded-lg bg-base-300">
-                      <img src={getImg(item.imageUrl)} crossOrigin="anonymous" alt={item.sku} loading="lazy" decoding="async" width="40" height="40" />
+                      <button type="button" onClick={() => openPreview(item)} disabled={!item.imageUrl}
+                        title={item.imageUrl ? 'กดเพื่อดูรูปใหญ่' : 'ไม่มีรูป'}
+                        className={`w-full h-full ${item.imageUrl ? 'cursor-zoom-in' : ''}`}>
+                        <img src={getImg(item.imageUrl)} crossOrigin="anonymous" alt={item.sku} loading="lazy" decoding="async" width="40" height="40" />
+                      </button>
                     </div>
                   </div>
                   <div className="flex-1 min-w-0">
@@ -451,7 +483,11 @@ export default function Inventory() {
                   <div className="flex items-center gap-3 min-w-0">
                     <div className="avatar shrink-0">
                       <div className="w-10 h-10 rounded">
-                        <img src={getImg(item.imageUrl)} crossOrigin="anonymous" alt="product" loading="lazy" decoding="async" width="40" height="40" />
+                        <button type="button" onClick={() => openPreview(item)} disabled={!item.imageUrl}
+                          title={item.imageUrl ? 'กดเพื่อดูรูปใหญ่' : 'ไม่มีรูป'}
+                          className={`w-full h-full ${item.imageUrl ? 'cursor-zoom-in' : ''}`}>
+                          <img src={getImg(item.imageUrl)} crossOrigin="anonymous" alt="product" loading="lazy" decoding="async" width="40" height="40" />
+                        </button>
                       </div>
                     </div>
                     <div className="text-xs min-w-0">
@@ -600,6 +636,30 @@ export default function Inventory() {
             </div>
 
             <div className="flex justify-end mt-4"><button className="btn btn-ghost" onClick={() => setCategoryModal(false)}>ปิด</button></div>
+          </div>
+        </div>
+      )}
+
+      {/* Popup รูปใหญ่ — z สูงกว่า modal ตะกร้า (z-100) เพื่อให้กดรูปจากในตะกร้าแล้วรูปไม่ไปโผล่ข้างหลัง */}
+      {preview && (
+        <div className="fixed inset-0 z-[110] flex items-center justify-center bg-black/80 backdrop-blur-sm p-4"
+          onClick={() => setPreview(null)}>
+          <div className="relative w-full max-w-3xl" onClick={e => e.stopPropagation()}>
+            <button type="button" onClick={() => setPreview(null)}
+              className="btn btn-sm btn-circle absolute -top-3 -right-3 z-10" title="ปิด (Esc)">✕</button>
+            {/* ใส่ crossOrigin ให้ตรงกับรูปเล็ก ไม่งั้นเบราว์เซอร์นับเป็นคนละแคชแล้วโหลดไฟล์ใหม่ทั้งก้อน */}
+            <img src={preview.url} crossOrigin="anonymous" alt={preview.sku} decoding="async"
+              className="w-full max-h-[75vh] object-contain rounded-2xl bg-base-100 shadow-2xl" />
+            <div className="mt-3 text-center text-white">
+              <p className="font-mono text-sm font-semibold">{preview.sku}</p>
+              <p className="text-sm opacity-90">{preview.name}</p>
+              {/* ยอดคาสายตาตอนดูรูป — คนเบิกมักเปิดรูปตอนกำลังตัดสินใจว่าจะเอากี่ชิ้น */}
+              <p className="flex items-center justify-center gap-3 text-xs mt-1">
+                {preview.stock !== null && <span className="opacity-80">คงเหลือ <b className="text-sm">{preview.stock}</b></span>}
+                <span className={preview.available > 0 ? 'text-success' : 'text-error'}>เบิกได้ <b className="text-sm">{preview.available}</b></span>
+              </p>
+              {preview.location && <p className="text-xs opacity-70 mt-1">📍 {preview.location}</p>}
+            </div>
           </div>
         </div>
       )}
