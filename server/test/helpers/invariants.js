@@ -75,7 +75,24 @@ export const INVARIANTS = [
 
   ['แถวตำแหน่งซ้ำ (สินค้าเดียวกัน ที่เดียวกัน มากกว่า 1 แถว)',
     `SELECT item_id, COUNT(*) n FROM item_locations
-     GROUP BY item_id, rack_id, IFNULL(storage_level, -1), IFNULL(room_id, -1) HAVING n > 1`]
+     GROUP BY item_id, rack_id, IFNULL(storage_level, -1), IFNULL(room_id, -1) HAVING n > 1`],
+
+  // ของชิ้นเดิมจะถูกส่งกลับได้ไม่เกินจำนวนที่รับไป ไม่งั้นสต็อกจะงอกจากอากาศ
+  ['คืนของเกินจำนวนที่รับไป',
+    `SELECT p.transactionId, ri.productId,
+            SUM(ri.requestedQty) AS returned,
+            (SELECT approvedQty FROM wms_transaction_items
+              WHERE tx_id = p.id AND productId = ri.productId) AS pickedUp
+     FROM wms_transactions rt
+     JOIN wms_transactions p ON p.id = rt.parent_tx_id
+     JOIN wms_transaction_items ri ON ri.tx_id = rt.id
+     WHERE rt.type = 'RETURN'
+     GROUP BY p.id, ri.productId
+     HAVING returned > IFNULL(pickedUp, 0)`],
+
+  ['ใบคืนของที่ไม่ได้ผูกกับใบเบิกต้นทาง',
+    `SELECT id, transactionId FROM wms_transactions
+     WHERE type = 'RETURN' AND parent_tx_id IS NULL`]
 ];
 
 /** คืนรายการกติกาที่ถูกละเมิด พร้อมตัวอย่างแถวที่ผิด */

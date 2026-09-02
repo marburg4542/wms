@@ -7,8 +7,10 @@ import {
   createOutboundRequest,
   getHistory,
   getTransactions,
+  getReturnableTransactions,
   markPickedUp,
-  resolveTransaction
+  resolveTransaction,
+  returnItems
 } from '../controllers/transactionController.js';
 import { authorizeRoles, verifyAuth } from '../middleware/authMiddleware.js';
 
@@ -25,5 +27,8 @@ router.put('/transactions/:id/pickup', verifyAuth, authorizeRoles('Admin', 'Mana
 router.put('/transactions/:id/cancel', verifyAuth, authorizeRoles('Admin', 'Manager', 'Operator'), cancelTransaction);
 // ยกเลิกการจองของใบที่อนุมัติแล้วแต่ไม่มีคนมารับ — คืนของเข้าสต็อก ต้องระบุเหตุผล
 router.put('/transactions/:id/cancel-reservation', verifyAuth, authorizeRoles('Admin', 'Manager'), cancelReservation);
+// คืนของที่รับไปแล้ว — ต่างจากยกเลิกจองตรงที่ของออกจากคลังไปแล้วจริง
+router.get('/transactions/returnable', verifyAuth, authorizeRoles('Admin', 'Manager'), getReturnableTransactions);
+router.post('/transactions/:id/return', verifyAuth, authorizeRoles('Admin', 'Manager'), returnItems);
 
 export default router;
