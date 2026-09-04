@@ -44,7 +44,7 @@ const getCurrentStock = (itemId) => {
 // ดึงใบเบิกพร้อมรายการสินค้า — กรองจากฝั่งฐานข้อมูลเพื่อไม่ต้องแบกประวัติทั้งหมดทุกครั้ง
 // includeActive = รวมใบที่ยังค้างอยู่ (รออนุมัติ/รอส่งมอบ) โดยไม่สนช่วงเวลา
 // since/until   = ช่วงเวลาของ COALESCE(resolvedDate, requestDate) แบบ ISO string
-const getFullTransactions = ({ includeActive = false, since = null, until = null } = {}) => {
+export const getFullTransactions = ({ includeActive = false, since = null, until = null } = {}) => {
   const params = {};
   const timeConds = [];
   if (since) { timeConds.push('COALESCE(t.resolvedDate, t.requestDate) >= @since'); params.since = since; }

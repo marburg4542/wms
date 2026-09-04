@@ -301,198 +301,35 @@ export default function Homepage() {
 
   // โหลดรูปสินค้าเป็น PNG dataURL (ผ่าน canvas เพื่อรองรับ jpg/png/webp และปรับขนาดให้เท่ากัน)
   // คืน null ถ้าโหลดไม่ได้ (รูปหาย/ติด CORS) เพื่อให้ข้ามไปโดยไม่ทำให้ทั้งรายงานพัง
-  const loadImageAsPng = (url) => new Promise((resolve) => {
-    if (!url) return resolve(null);
-    const image = new Image();
-    image.crossOrigin = 'anonymous';
-    image.onload = () => {
-      try {
-        const S = 90; // ความละเอียดรูปในไฟล์ (px) — คมพอสำหรับพิมพ์
-        const canvas = document.createElement('canvas');
-        canvas.width = S; canvas.height = S;
-        const ctx = canvas.getContext('2d');
-        ctx.fillStyle = '#f8fafc'; ctx.fillRect(0, 0, S, S);
-        // จัดรูปให้อยู่กลาง แบบ contain (เห็นเต็มใบ ไม่โดนตัด)
-        const scale = Math.min(S / image.width, S / image.height);
-        const w = image.width * scale, h = image.height * scale;
-        ctx.drawImage(image, (S - w) / 2, (S - h) / 2, w, h);
-        resolve(canvas.toDataURL('image/png'));
-      } catch { resolve(null); }
-    };
-    image.onerror = () => resolve(null);
-    image.src = url;
-  });
-
-  // เตรียมข้อมูลรายงาน — ใช้ร่วมกันทั้งทาง jsPDF และทางสั่งพิมพ์จากเบราว์เซอร์
-  // แยกออกมาเพื่อไม่ให้สองทางคำนวณข้อมูลคนละแบบแล้วได้ตัวเลขไม่ตรงกัน
-  const buildReportData = async () => {
-    // แต่ละแถว = สินค้า 1 ชิ้น (ฟิลด์ระดับใบเบิกโชว์เฉพาะแถวแรกของใบ) + โหลดรูปทุกชิ้นล่วงหน้า
-    const rows = [];
-      const imageCache = new Map();
-      for (const tx of exportFilteredLogs) {
-        const items = getItemsToRender(tx);
-        for (let idx = 0; idx < items.length; idx++) {
-          const item = items[idx];
-          const url = item.imageUrl ? getImg(item.imageUrl) : '';
-          if (url && !imageCache.has(url)) imageCache.set(url, await loadImageAsPng(url));
-          rows.push({
-            img: url ? imageCache.get(url) : null,
-            date: idx === 0 ? new Date(tx.requestDate).toLocaleString('th-TH', { dateStyle: 'short', timeStyle: 'short' }) : '',
-            txId: idx === 0 ? (tx.transactionId || String(tx.id)) : '',
-            type: idx === 0 ? txTypeLabel(tx.type) : '',
-            sku: item.sku || '-',
-            group: item.groupId ? `${item.groupId} — ${item.groupName || ''}` : '-',
-            name: item.productName || '-',
-            qty: String(tx.type === 'INBOUND' ? item.requestedQty : item.approvedQty),
-            requester: idx === 0 ? (tx.requesterUsername || '-') : '',
-            project: idx === 0 ? (tx.project || '-') : '',
-            status: idx === 0 ? txStatusLabel(tx.status) : '',
-            note: idx === 0 ? (tx.adminMessage || '-') : ''
-          });
-        }
-      }
-
-    let periodLabel = exportType === 'day' ? `วันที่ ${exportValue}` : exportType === 'month' ? `เดือน ${exportValue}` : `ปี ${exportValue}`;
-    if (exportTypeFilter !== 'all') periodLabel += ` · ${txTypeLabel(exportTypeFilter)}`;
-    if (exportProjectFilter !== 'all') periodLabel += ` · โปรเจกต์: ${exportProjectFilter}`;
-
-    // ---- ตารางสรุปยอดรวมต่อสินค้า ----
-    const summaryMap = new Map(); // sku -> { name, inbound, outbound }
-    for (const tx of exportFilteredLogs) {
-      // นับเฉพาะนำเข้า/เบิกออกจริง — ข้ามการปรับยอด (ADJUSTMENT) และประเภทอื่น
-      if (tx.type !== 'INBOUND' && tx.type !== 'OUTBOUND') continue;
-      for (const item of getItemsToRender(tx)) {
-        const sku = item.sku || '-';
-        const e = summaryMap.get(sku) || { name: item.productName || '-', inbound: 0, outbound: 0 };
-        if (tx.type === 'INBOUND') e.inbound += Number(item.requestedQty) || 0;
-        else e.outbound += Number(item.approvedQty) || 0;
-        summaryMap.set(sku, e);
-      }
-    }
-    const summaryRows = [...summaryMap.entries()]
-      .map(([sku, v]) => [sku, v.name, String(v.inbound), String(v.outbound)])
-      .sort((a, b) => a[0].localeCompare(b[0]));
-
-    return { rows, summaryRows, periodLabel };
-  };
-
-  // สร้างรายงานด้วยการสั่งพิมพ์จากเบราว์เซอร์ — ภาษาไทยถูกต้องเพราะเบราว์เซอร์
-  // จัดตำแหน่งสระ/วรรณยุกต์ให้เอง (สิ่งที่ jsPDF ทำไม่ได้)
-  // ผู้ใช้เลือก "บันทึกเป็น PDF" ในกล่องพิมพ์ ปลายทางจึงเป็นไฟล์ PDF เหมือนกัน
-  const executePrintExport = async () => {
-    if (exportFilteredLogs.length === 0) return toast.error('ไม่มีข้อมูลในช่วงเวลาที่เลือก');
-
-    setExporting(true);
-    toast.loading('กำลังจัดหน้ารายงาน...', { id: 'pdf-toast' });
-    try {
-      const [{ sarabunRegular }, { printReport }, { rows, summaryRows, periodLabel }] = await Promise.all([
-        import('../../utils/thaiFont'),
-        import('../../utils/reportPrint'),
-        buildReportData()
-      ]);
-
-      const pages = await printReport({
-        rows,
-        summaryRows,
-        periodLabel,
-        txCount: exportFilteredLogs.length,
-        fontBase64: sarabunRegular,
-        filename: `WMS_Report_${exportType}_${exportValue}`
-      });
-
-      toast.success(`จัดหน้าเสร็จ ${pages} หน้า — เลือก "บันทึกเป็น PDF" ในกล่องพิมพ์`, { id: 'pdf-toast', duration: 7000 });
-      setExportModalOpen(false);
-    } catch (err) {
-      console.error('Print export failed:', err);
-      toast.error('จัดหน้ารายงานไม่สำเร็จ', { id: 'pdf-toast' });
-    } finally {
-      setExporting(false);
-    }
-  };
-
-  // สร้าง PDF ด้วย jsPDF + autoTable — แบ่งหน้าอัตโนมัติจริง ไม่ตัดกลางแถว ขึ้นหัวตารางซ้ำทุกหน้า
-  // ⚠️ ทางนี้ภาษาไทยเพี้ยน: jsPDF ไม่จัดตำแหน่งสระ/วรรณยุกต์ (ไม่อ่าน GPOS)
-  //    "ที่" จะออกมาเป็น "ที" — เก็บไว้เทียบกับทางสั่งพิมพ์ก่อนตัดสินใจว่าจะใช้ทางไหน
-  const executePDFExport = async () => {
+  // ขอไฟล์รายงานจากเซิร์ฟเวอร์ แล้วให้เบราว์เซอร์ดาวน์โหลดเอง
+  //
+  // ทำไมไม่สร้างที่ฝั่งเบราว์เซอร์เหมือนเดิม: iOS Safari สั่งพิมพ์แล้วเข้า AirPrint เสมอ
+  // ผู้ใช้บันทึกเป็นไฟล์ไม่ได้ ส่วนไลบรารีสร้าง PDF ในเบราว์เซอร์ก็จัดวรรณยุกต์ไทยผิด
+  // เซิร์ฟเวอร์เรนเดอร์แล้วส่งเป็นไฟล์แนบจึงได้ทั้งภาษาไทยถูกและดาวน์โหลดได้ทุกอุปกรณ์
+  const executeServerExport = async () => {
     if (exportFilteredLogs.length === 0) return toast.error('ไม่มีข้อมูลในช่วงเวลาที่เลือก');
 
     setExporting(true);
     toast.loading('กำลังสร้างไฟล์ PDF...', { id: 'pdf-toast' });
     try {
-      const [{ jsPDF }, { default: autoTable }, { sarabunRegular }, { rows, summaryRows, periodLabel }] = await Promise.all([
-        import('jspdf'),
-        import('jspdf-autotable'),
-        import('../../utils/thaiFont'),
-        buildReportData()
-      ]);
-
-      const doc = new jsPDF({ orientation: 'landscape', unit: 'mm', format: 'a4' });
-      doc.addFileToVFS('Sarabun-Regular.ttf', sarabunRegular);
-      doc.addFont('Sarabun-Regular.ttf', 'Sarabun', 'normal');
-      // ผูก bold เข้ากับไฟล์เดียวกันด้วย เพราะหัวตาราง autoTable ใช้ตัวหนา — ไม่งั้นภาษาไทยในหัวตารางจะเพี้ยน
-      doc.addFont('Sarabun-Regular.ttf', 'Sarabun', 'bold');
-      doc.setFont('Sarabun');
-
-      const IMG_COL = 3; // index คอลัมน์รูปใน body
-
-      autoTable(doc, {
-        startY: 24,
-        margin: { top: 22, bottom: 12, left: 8, right: 8 },
-        head: [['วันที่-เวลา', 'รหัสใบรายการ', 'ประเภท', 'รูป', 'SKU', 'หมวดหมู่', 'ชื่อสินค้า', 'จำนวน', 'ผู้ทำรายการ', 'โปรเจกต์', 'สถานะ', 'หมายเหตุ']],
-        body: rows.map(r => [r.date, r.txId, r.type, '', r.sku, r.group, r.name, r.qty, r.requester, r.project, r.status, r.note]),
-        styles: { font: 'Sarabun', fontSize: 8, cellPadding: 1.5, valign: 'middle', minCellHeight: 16 },
-        headStyles: { font: 'Sarabun', fillColor: [37, 99, 235], textColor: 255, minCellHeight: 8 },
-        alternateRowStyles: { fillColor: [241, 247, 253] },
-        columnStyles: { 3: { cellWidth: 18, halign: 'center' }, 7: { halign: 'center' } },
-        // วาดรูปสินค้าในเซลล์ (autoTable รับผิดชอบการแบ่งหน้า)
-        didDrawCell: (data) => {
-          if (data.section === 'body' && data.column.index === IMG_COL) {
-            const png = rows[data.row.index]?.img;
-            if (png) {
-              const s = 14;
-              doc.addImage(png, 'PNG', data.cell.x + (data.cell.width - s) / 2, data.cell.y + (data.cell.height - s) / 2, s, s);
-            }
-          }
-        },
-        didDrawPage: () => {
-          doc.setFont('Sarabun');
-          doc.setFontSize(13);
-          doc.setTextColor(20, 40, 70);
-          doc.text('รายงานประวัติการทำรายการคลังสินค้า (WMS)', 148.5, 12, { align: 'center' });
-          doc.setFontSize(9);
-          doc.setTextColor(110);
-          doc.text(`${periodLabel} · ออกรายงานเมื่อ ${new Date().toLocaleString('th-TH')} · ${exportFilteredLogs.length} ใบรายการ`, 148.5, 17, { align: 'center' });
-          doc.text(`หน้า ${doc.internal.getNumberOfPages()}`, 289, 203, { align: 'right' });
-        }
+      const res = await fetchApi('/api/reports/history', {
+        method: 'POST',
+        body: JSON.stringify({
+          type: exportType,
+          value: exportValue,
+          typeFilter: exportTypeFilter,
+          projectFilter: exportProjectFilter
+        })
       });
-
-      if (summaryRows.length > 0) {
-        doc.addPage();
-        autoTable(doc, {
-          startY: 22,
-          margin: { top: 20, bottom: 12, left: 8, right: 8 },
-          head: [['SKU', 'ชื่อสินค้า', 'รับเข้ารวม (ชิ้น)', 'เบิกออกรวม (ชิ้น)']],
-          body: summaryRows,
-          styles: { font: 'Sarabun', fontSize: 9, cellPadding: 2, valign: 'middle' },
-          headStyles: { font: 'Sarabun', fillColor: [16, 122, 87], textColor: 255 },
-          alternateRowStyles: { fillColor: [237, 247, 242] },
-          columnStyles: { 0: { cellWidth: 34 }, 2: { halign: 'center' }, 3: { halign: 'center' } },
-          didDrawPage: () => {
-            doc.setFont('Sarabun'); doc.setFontSize(13); doc.setTextColor(16, 122, 87);
-            doc.text('สรุปยอดรวมต่อสินค้า', 148.5, 12, { align: 'center' });
-            doc.setFontSize(9); doc.setTextColor(110);
-            doc.text(`${periodLabel} · รวม ${summaryRows.length} รายการสินค้า`, 148.5, 17, { align: 'center' });
-            doc.text(`หน้า ${doc.internal.getNumberOfPages()}`, 289, 203, { align: 'right' });
-          }
-        });
+      if (res.success) {
+        toast.success(`รายงาน ${res.pages} หน้า พร้อมดาวน์โหลด`, { id: 'pdf-toast' });
+        setExportModalOpen(false);
+        // นำทางตรงไปที่ลิงก์ ไม่ใช่ blob — เบราว์เซอร์จะเห็นหัว attachment แล้วบันทึกไฟล์ให้เอง
+        // ซึ่งเป็นวิธีเดียวที่ iOS เก็บไฟล์ลงแอป Files ได้จริง
+        window.location.href = res.downloadUrl;
       }
-
-      doc.save(`WMS_Report_${exportType}_${exportValue}.pdf`);
-      toast.success('บันทึกไฟล์ PDF เรียบร้อย', { id: 'pdf-toast' });
-      setExportModalOpen(false);
     } catch (err) {
-      console.error('PDF export failed:', err);
-      toast.error('สร้างไฟล์ PDF ไม่สำเร็จ', { id: 'pdf-toast' });
+      toast.error(err?.message || 'สร้างไฟล์ PDF ไม่สำเร็จ', { id: 'pdf-toast' });
     } finally {
       setExporting(false);
     }
@@ -924,22 +761,11 @@ export default function Homepage() {
                   : <>พบข้อมูลที่ตรงกับเงื่อนไข: <strong className="text-primary">{exportFilteredLogs.length}</strong> รายการ</>}
               </div>
             </div>
-            {/* สองทางให้เทียบกัน — ทางสั่งพิมพ์ภาษาไทยถูก ทางดาวน์โหลดตรงเร็วกว่าแต่วรรณยุกต์เพี้ยน */}
-            <p className="pt-3 text-[11px] leading-relaxed text-base-content/60">
-              แนะนำ <b>สั่งพิมพ์เป็น PDF</b> เพราะภาษาไทยแสดงถูกต้องทุกตัว —
-              ปุ่มดาวน์โหลดตรงจะเร็วกว่าแต่วรรณยุกต์บางคำเพี้ยน (เช่น “ที่” กลายเป็น “ที”)
-            </p>
-            <div className="flex flex-wrap justify-end gap-2 pt-3 border-t border-base-200">
+            <div className="flex justify-end gap-3 pt-4 border-t border-base-200">
               <button className="btn btn-ghost" onClick={() => setExportModalOpen(false)} disabled={exporting}>ยกเลิก</button>
-              <button className="btn btn-outline" onClick={executePDFExport} disabled={exporting || exportLoading || exportFilteredLogs.length === 0}
-                title="ดาวน์โหลดไฟล์ทันที แต่วรรณยุกต์ไทยบางคำเพี้ยน">
+              <button className="btn btn-primary text-white" onClick={executeServerExport} disabled={exporting || exportLoading || exportFilteredLogs.length === 0}>
                 {exporting && <span className="loading loading-spinner loading-xs"></span>}
-                ดาวน์โหลดตรง (ไทยเพี้ยน)
-              </button>
-              <button className="btn btn-primary text-white" onClick={executePrintExport} disabled={exporting || exportLoading || exportFilteredLogs.length === 0}
-                title="เปิดกล่องพิมพ์ของเบราว์เซอร์ แล้วเลือกบันทึกเป็น PDF">
-                {exporting && <span className="loading loading-spinner loading-xs"></span>}
-                สั่งพิมพ์เป็น PDF (ไทยถูก)
+                ดาวน์โหลดไฟล์ PDF
               </button>
             </div>
           </div>

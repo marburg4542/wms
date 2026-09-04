@@ -1,11 +1,11 @@
-// สร้างรายงาน PDF ด้วยการสั่งพิมพ์จากเบราว์เซอร์ (ทางเลือกแทน jsPDF)
+// ประกอบรายงานประวัติการทำรายการเป็น HTML สำหรับเรนเดอร์เป็น PDF
 //
-// ทำไมต้องมีทางนี้: jsPDF ไม่อ่านตาราง GPOS ของฟอนต์ จึงไม่จัดตำแหน่งสระ/วรรณยุกต์ไทย
-// วรรณยุกต์เลยไปทับสระหรือทับหัวพยัญชนะจนมองไม่เห็น เช่น "ที่" ออกมาเป็น "ที"
-// และ "ปุ่ม" ออกมาเป็น "ปุม" (ตัวอักษรอยู่ในไฟล์ครบ คัดลอกได้ แต่มองแล้วอ่านผิด)
+// ย้ายมาจากฝั่งเบราว์เซอร์ (src/utils/reportPrint.js) เพราะ iOS Safari สั่งพิมพ์แล้ว
+// เข้า AirPrint เสมอ บันทึกเป็นไฟล์ไม่ได้ — ให้เซิร์ฟเวอร์เรนเดอร์แล้วส่งเป็นไฟล์แนบแทน
 //
-// เบราว์เซอร์จัดตำแหน่งอักขระประสมให้ถูกอยู่แล้ว จึงยืมความสามารถนั้นมาใช้
-// โดยประกอบรายงานเป็น HTML แล้วสั่ง print ผ่าน iframe ที่ซ่อนไว้
+// ทำไมไม่ใช้ไลบรารีสร้าง PDF โดยตรง: jsPDF ไม่อ่านตาราง GPOS ของฟอนต์ จึงไม่จัดตำแหน่ง
+// สระ/วรรณยุกต์ไทย วัดกับไฟล์จริงแล้วได้ "ที่"→"ที" และ "ปุ่ม"→"ปุม"
+// เบราว์เซอร์จัดให้ถูกอยู่แล้ว จึงยืมความสามารถนั้นมาใช้
 //
 // แบ่งหน้าเองแทนที่จะปล่อยให้เบราว์เซอร์แบ่ง เพราะ Chrome ใส่เลขหน้าใน CSS ไม่ได้
 // (ไม่รองรับ @page margin box) การกำหนดจำนวนแถวต่อหน้าเองจึงเป็นทางเดียวที่ทำให้
@@ -70,12 +70,14 @@ const styles = (fontBase64) => `
 const MAIN_HEAD = ['วันที่-เวลา', 'รหัสใบรายการ', 'ประเภท', 'รูป', 'SKU', 'หมวดหมู่', 'ชื่อสินค้า', 'จำนวน', 'ผู้ทำรายการ', 'โปรเจกต์', 'สถานะ', 'หมายเหตุ'];
 const MAIN_WIDTHS = ['8%', '9%', '6%', '6%', '6%', '11%', '16%', '5%', '9%', '8%', '7%', '9%'];
 
+// รูปอ้างเป็น URL ปกติ (/uploads/...) ไม่ฝัง base64 — Chrome โหลดจากเซิร์ฟเวอร์ตัวเองผ่าน HTTP
+// ทำให้ HTML ไม่บวมและไม่ต้องมีไลบรารีย่อรูปฝั่งเซิร์ฟเวอร์
 const mainRowHtml = (row) => `
   <tr>
     <td>${esc(row.date)}</td>
     <td>${esc(row.txId)}</td>
     <td>${esc(row.type)}</td>
-    <td class="img">${row.img ? `<img src="${row.img}" alt="">` : ''}</td>
+    <td class="img">${row.imageUrl ? `<img src="${esc(row.imageUrl)}" alt="">` : ''}</td>
     <td>${esc(row.sku)}</td>
     <td>${esc(row.group)}</td>
     <td>${esc(row.name)}</td>
@@ -86,8 +88,46 @@ const mainRowHtml = (row) => `
     <td>${esc(row.note)}</td>
   </tr>`;
 
+// ย่อรูปก่อนพิมพ์ — ในรายงานรูปแสดงแค่ 13mm แต่ไฟล์ต้นฉบับใหญ่ 100-200 KB
+// ถ้าปล่อยไว้ รายงานรายเดือน 90 แถวจะได้ไฟล์ ~11 MB ซึ่งโหลดบนมือถือช้ามาก
+// ให้เบราว์เซอร์ที่กำลังเรนเดอร์ย่อเองผ่าน canvas (รูปมาจาก origin เดียวกัน canvas จึงไม่ถูกล็อก)
+// ถ้าย่อไม่สำเร็จก็ยังได้รูปเต็มตามเดิม รายงานไม่พัง แค่ไฟล์ใหญ่กว่า
+const SHRINK_SCRIPT = `<script>
+(async () => {
+  const TARGET = 160;   // px — คมพอสำหรับ 13mm บนกระดาษ
+  await Promise.all([...document.images].map((img) => new Promise((done) => {
+    const run = () => {
+      try {
+        const side = Math.max(img.naturalWidth, img.naturalHeight);
+        if (!side || side <= TARGET) return done();
+        const scale = TARGET / side;
+        const canvas = document.createElement('canvas');
+        canvas.width = Math.round(img.naturalWidth * scale);
+        canvas.height = Math.round(img.naturalHeight * scale);
+        const ctx = canvas.getContext('2d');
+        ctx.fillStyle = '#fff';
+        ctx.fillRect(0, 0, canvas.width, canvas.height);
+        ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+        img.src = canvas.toDataURL('image/jpeg', 0.8);
+        img.onload = () => done();
+      } catch { done(); }
+    };
+    if (img.complete) run(); else { img.onload = run; img.onerror = () => done(); }
+  })));
+  document.documentElement.dataset.ready = '1';
+})();
+</script>`;
+
 /**
- * ประกอบรายงานเป็น HTML — แยกจากการสั่งพิมพ์เพื่อให้ทดสอบผลลัพธ์ได้โดยไม่ต้องเปิดกล่องพิมพ์
+ * ประกอบรายงานเป็น HTML พร้อมเลขหน้าที่ตรงความจริง
+ *
+ * @param {object} report
+ * @param {Array}  report.rows         แถวรายการสินค้า
+ * @param {Array}  report.summaryRows  [sku, ชื่อ, รับเข้า, เบิกออก]
+ * @param {string} report.periodLabel  ข้อความช่วงเวลา/ตัวกรอง
+ * @param {number} report.txCount      จำนวนใบรายการ
+ * @param {string} report.fontBase64   ฟอนต์ไทย base64
+ * @param {string} report.filename     ใช้เป็น <title>
  * @returns {{ html: string, pages: number }}
  */
 export const buildReportHtml = ({ rows, summaryRows, periodLabel, txCount, fontBase64, filename }) => {
@@ -129,53 +169,9 @@ export const buildReportHtml = ({ rows, summaryRows, periodLabel, txCount, fontB
       </section>`;
   }).join('');
 
-  const html = `<!DOCTYPE html><html lang="th"><head><meta charset="utf-8">`
+  const html = '<!DOCTYPE html><html lang="th"><head><meta charset="utf-8">'
     + `<title>${esc(filename)}</title><style>${styles(fontBase64)}</style></head>`
-    + `<body>${mainHtml}${summaryHtml}</body></html>`;
+    + `<body>${mainHtml}${summaryHtml}${SHRINK_SCRIPT}</body></html>`;
 
   return { html, pages: total };
-};
-
-/**
- * ประกอบรายงานแล้วเปิดหน้าต่างสั่งพิมพ์ของเบราว์เซอร์
- * ผู้ใช้เลือก "บันทึกเป็น PDF" เอง — ชื่อไฟล์ตั้งต้นมาจาก <title>
- *
- * @param {object}   report
- * @param {Array}    report.rows         แถวรายการ (ฟิลด์เดียวกับที่ jsPDF ใช้)
- * @param {Array}    report.summaryRows  [sku, ชื่อ, รับเข้า, เบิกออก]
- * @param {string}   report.periodLabel  ข้อความช่วงเวลา/ตัวกรอง
- * @param {number}   report.txCount      จำนวนใบรายการ
- * @param {string}   report.fontBase64   ฟอนต์ไทย base64 (ตัวเดียวกับที่ jsPDF ใช้)
- * @param {string}   report.filename     ชื่อไฟล์ตั้งต้น (ไม่ต้องมี .pdf)
- */
-export const printReport = async (report) => {
-  const { html, pages } = buildReportHtml(report);
-
-  // พิมพ์จาก iframe ที่ซ่อนไว้ ไม่ใช่ window.open — ไม่ถูกตัวบล็อกป๊อปอัพขัด
-  // และไม่ทำให้ผู้ใช้หลุดจากหน้าเดิม
-  const frame = document.createElement('iframe');
-  frame.setAttribute('aria-hidden', 'true');
-  frame.style.cssText = 'position:fixed;right:0;bottom:0;width:0;height:0;border:0;visibility:hidden';
-  document.body.appendChild(frame);
-
-  try {
-    const frameDoc = frame.contentDocument;
-    frameDoc.open();
-    frameDoc.write(html);
-    frameDoc.close();
-
-    // ต้องรอฟอนต์และรูปให้พร้อมก่อนสั่งพิมพ์ ไม่งั้นได้หน้าเปล่าหรือฟอนต์ผิด
-    if (frameDoc.fonts?.ready) await frameDoc.fonts.ready;
-    await Promise.all([...frameDoc.images].map((img) => (
-      img.complete ? Promise.resolve() : new Promise((done) => { img.onload = img.onerror = done; })
-    )));
-
-    frame.contentWindow.focus();
-    frame.contentWindow.print();
-  } finally {
-    // เก็บ iframe ไว้สักครู่ เพราะบางเบราว์เซอร์ยังอ่านเนื้อหาอยู่ตอนกล่องพิมพ์เปิด
-    setTimeout(() => frame.remove(), 60000);
-  }
-
-  return pages;
 };

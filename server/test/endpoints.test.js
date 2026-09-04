@@ -11,6 +11,7 @@ const racks = await import('../controllers/rackController.js');
 const rooms = await import('../controllers/roomController.js');
 const storage = await import('../controllers/storageItemController.js');
 const transactions = await import('../controllers/transactionController.js');
+const reports = await import('../controllers/reportController.js');
 
 // ---- สร้างคลังจำลองให้ครบทุกชนิดที่ระบบรองรับ ----
 const planId = db.prepare('SELECT id FROM floor_plans LIMIT 1').get().id;
@@ -183,6 +184,49 @@ test('คืนของจากใบที่ยังไม่ส่งม�
   });
   assert.equal(res.success, false, 'ใบที่ยังไม่ส่งมอบต้องคืนไม่ได้');
   assert.match(res.message, /ยกเลิกจอง/, 'ต้องบอกทางเลือกที่ถูกต้องให้ผู้ใช้');
+});
+
+// ---- ข้อมูลรายงาน ----
+// ตรรกะกรอง/ประกอบแถวย้ายจากหน้าเว็บมาไว้ที่เซิร์ฟเวอร์ตอนทำ PDF ฝั่งเซิร์ฟเวอร์
+// ต้องมีเทสต์คุมไว้ ไม่งั้นรายงานเพี้ยนแบบเงียบๆ โดยไม่มีใครรู้
+test('ข้อมูลรายงาน: กรองใบที่ยังไม่ส่งมอบออก และแยกตามประเภทได้', async () => {
+  // ต้องมีใบรับเข้าอย่างน้อยหนึ่งใบ ตัวกรองประเภทถึงจะทดสอบได้จริง
+  await callOk('createInboundTransaction', transactions.createInboundTransaction, {
+    body: { sku, name: 'สินค้าทดสอบ', quantity: 5, unitCost: 25, note: 'รับเข้าทดสอบ' }
+  });
+
+  const now = new Date();
+  const month = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
+
+  const all = reports.collectReport({ type: 'month', value: month });
+  assert.ok(all.rows.length > 0, 'ต้องมีแถวในรายงาน');
+  assert.equal(all.periodLabel, `เดือน ${month}`);
+
+  // ใบที่อนุมัติแล้วแต่ยังไม่มีคนมารับ ยังไม่ถือเป็นประวัติ ต้องไม่โผล่ในรายงาน
+  const waiting = db.prepare(
+    "SELECT transactionId FROM wms_transactions WHERE type = 'OUTBOUND' AND status IN ('Approved','Partial') AND pickedUpAt IS NULL"
+  ).all().map((row) => row.transactionId);
+  for (const txId of waiting) {
+    assert.ok(!all.rows.some((row) => row.txId === txId), `${txId} ยังไม่ส่งมอบ ไม่ควรอยู่ในรายงาน`);
+  }
+
+  // กรองประเภทแล้วต้องเหลือเฉพาะประเภทนั้น (แถวต่อเนื่องของใบเดียวกันเว้นช่องประเภทไว้)
+  const inbound = reports.collectReport({ type: 'month', value: month, typeFilter: 'INBOUND' });
+  const types = new Set(inbound.rows.map((row) => row.type).filter(Boolean));
+  assert.deepEqual([...types], ['รับเข้า'], 'กรองรับเข้าแล้วต้องเหลือแต่รับเข้า');
+  assert.match(inbound.periodLabel, /รับเข้า/, 'ป้ายช่วงเวลาต้องบอกตัวกรองด้วย');
+
+  // ตารางสรุปนับเฉพาะรับเข้า/เบิกออก ไม่นับปรับยอด
+  for (const [, , inQty, outQty] of all.summaryRows) {
+    assert.ok(Number.isFinite(Number(inQty)) && Number.isFinite(Number(outQty)), 'ยอดสรุปต้องเป็นตัวเลข');
+  }
+});
+
+test('ข้อมูลรายงาน: ช่วงเวลาที่ไม่มีข้อมูลต้องคืนแถวว่าง ไม่ใช่พัง', () => {
+  const empty = reports.collectReport({ type: 'year', value: '2001' });
+  assert.equal(empty.rows.length, 0);
+  assert.equal(empty.summaryRows.length, 0);
+  assert.equal(empty.txCount, 0);
 });
 
 test.after(() => temp.cleanup(db));
