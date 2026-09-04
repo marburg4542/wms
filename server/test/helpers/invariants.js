@@ -95,7 +95,30 @@ export const INVARIANTS = [
      WHERE type = 'RETURN' AND parent_tx_id IS NULL`]
 ];
 
-/** คืนรายการกติกาที่ถูกละเมิด พร้อมตัวอย่างแถวที่ผิด */
-export const findViolations = (db) => INVARIANTS
-  .map(([name, sql]) => ({ name, rows: db.prepare(sql).all() }))
-  .filter((result) => result.rows.length > 0);
+/** คืนรายการกติกาที่ถูกละเมิด พร้อมตัวอย่างแถวที่ผิด
+ *
+ * onUnsupported — ใส่มาเมื่อผู้เรียกยอมให้ข้ามกติกาที่ไฟล์นั้นรันไม่ได้ เพราะไม่มีตาราง/คอลัมน์
+ * ที่กติกาอ้างถึง เกิดกับไฟล์สำรองที่ทำไว้ก่อนฟีเจอร์นั้นจะมี ซึ่ง tools/audit.mjs ต้องตรวจได้
+ * ไม่งั้นวันที่ต้องกู้ข้อมูลจะไม่มีเครื่องมือบอกว่าสำเนาชุดไหนใช้ได้
+ *
+ * ไม่ใส่ = พังทันทีเหมือนเดิม ซึ่งถูกแล้วสำหรับฝั่งเทสต์ เพราะ DB ชั่วคราวสร้างใหม่ทุกครั้ง
+ * schema ครบเสมอ กติกาที่รันไม่ได้จึงแปลว่าเขียนผิด ต้องเห็นทันที ไม่ใช่ถูกข้ามเงียบ ๆ
+ *
+ * ข้ามเฉพาะ "no such table/column" — syntax error ยังโยนต่อทั้งสองฝั่ง
+ * ไม่งั้นกติกาที่พิมพ์ผิดจะไปโผล่ในรายงานว่า "ข้าม" แล้วไม่มีใครเอะใจ
+ */
+export const findViolations = (db, { onUnsupported } = {}) => {
+  const violations = [];
+  for (const [name, sql] of INVARIANTS) {
+    let rows;
+    try {
+      rows = db.prepare(sql).all();
+    } catch (err) {
+      if (!onUnsupported || !/no such (table|column)/i.test(err.message)) throw err;
+      onUnsupported(name, err.message);
+      continue;
+    }
+    if (rows.length > 0) violations.push({ name, rows });
+  }
+  return violations;
+};
