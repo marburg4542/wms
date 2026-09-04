@@ -323,21 +323,11 @@ export default function Homepage() {
     image.src = url;
   });
 
-  // สร้าง PDF ด้วย jsPDF + autoTable — แบ่งหน้าอัตโนมัติจริง ไม่ตัดกลางแถว ขึ้นหัวตารางซ้ำทุกหน้า
-  const executePDFExport = async () => {
-    if (exportFilteredLogs.length === 0) return toast.error('ไม่มีข้อมูลในช่วงเวลาที่เลือก');
-
-    setExporting(true);
-    toast.loading('กำลังสร้างไฟล์ PDF...', { id: 'pdf-toast' });
-    try {
-      const [{ jsPDF }, { default: autoTable }, { sarabunRegular }] = await Promise.all([
-        import('jspdf'),
-        import('jspdf-autotable'),
-        import('../../utils/thaiFont')
-      ]);
-
-      // แต่ละแถว = สินค้า 1 ชิ้น (ฟิลด์ระดับใบเบิกโชว์เฉพาะแถวแรกของใบ) + โหลดรูปทุกชิ้นล่วงหน้า
-      const rows = [];
+  // เตรียมข้อมูลรายงาน — ใช้ร่วมกันทั้งทาง jsPDF และทางสั่งพิมพ์จากเบราว์เซอร์
+  // แยกออกมาเพื่อไม่ให้สองทางคำนวณข้อมูลคนละแบบแล้วได้ตัวเลขไม่ตรงกัน
+  const buildReportData = async () => {
+    // แต่ละแถว = สินค้า 1 ชิ้น (ฟิลด์ระดับใบเบิกโชว์เฉพาะแถวแรกของใบ) + โหลดรูปทุกชิ้นล่วงหน้า
+    const rows = [];
       const imageCache = new Map();
       for (const tx of exportFilteredLogs) {
         const items = getItemsToRender(tx);
@@ -362,6 +352,80 @@ export default function Homepage() {
         }
       }
 
+    let periodLabel = exportType === 'day' ? `วันที่ ${exportValue}` : exportType === 'month' ? `เดือน ${exportValue}` : `ปี ${exportValue}`;
+    if (exportTypeFilter !== 'all') periodLabel += ` · ${txTypeLabel(exportTypeFilter)}`;
+    if (exportProjectFilter !== 'all') periodLabel += ` · โปรเจกต์: ${exportProjectFilter}`;
+
+    // ---- ตารางสรุปยอดรวมต่อสินค้า ----
+    const summaryMap = new Map(); // sku -> { name, inbound, outbound }
+    for (const tx of exportFilteredLogs) {
+      // นับเฉพาะนำเข้า/เบิกออกจริง — ข้ามการปรับยอด (ADJUSTMENT) และประเภทอื่น
+      if (tx.type !== 'INBOUND' && tx.type !== 'OUTBOUND') continue;
+      for (const item of getItemsToRender(tx)) {
+        const sku = item.sku || '-';
+        const e = summaryMap.get(sku) || { name: item.productName || '-', inbound: 0, outbound: 0 };
+        if (tx.type === 'INBOUND') e.inbound += Number(item.requestedQty) || 0;
+        else e.outbound += Number(item.approvedQty) || 0;
+        summaryMap.set(sku, e);
+      }
+    }
+    const summaryRows = [...summaryMap.entries()]
+      .map(([sku, v]) => [sku, v.name, String(v.inbound), String(v.outbound)])
+      .sort((a, b) => a[0].localeCompare(b[0]));
+
+    return { rows, summaryRows, periodLabel };
+  };
+
+  // สร้างรายงานด้วยการสั่งพิมพ์จากเบราว์เซอร์ — ภาษาไทยถูกต้องเพราะเบราว์เซอร์
+  // จัดตำแหน่งสระ/วรรณยุกต์ให้เอง (สิ่งที่ jsPDF ทำไม่ได้)
+  // ผู้ใช้เลือก "บันทึกเป็น PDF" ในกล่องพิมพ์ ปลายทางจึงเป็นไฟล์ PDF เหมือนกัน
+  const executePrintExport = async () => {
+    if (exportFilteredLogs.length === 0) return toast.error('ไม่มีข้อมูลในช่วงเวลาที่เลือก');
+
+    setExporting(true);
+    toast.loading('กำลังจัดหน้ารายงาน...', { id: 'pdf-toast' });
+    try {
+      const [{ sarabunRegular }, { printReport }, { rows, summaryRows, periodLabel }] = await Promise.all([
+        import('../../utils/thaiFont'),
+        import('../../utils/reportPrint'),
+        buildReportData()
+      ]);
+
+      const pages = await printReport({
+        rows,
+        summaryRows,
+        periodLabel,
+        txCount: exportFilteredLogs.length,
+        fontBase64: sarabunRegular,
+        filename: `WMS_Report_${exportType}_${exportValue}`
+      });
+
+      toast.success(`จัดหน้าเสร็จ ${pages} หน้า — เลือก "บันทึกเป็น PDF" ในกล่องพิมพ์`, { id: 'pdf-toast', duration: 7000 });
+      setExportModalOpen(false);
+    } catch (err) {
+      console.error('Print export failed:', err);
+      toast.error('จัดหน้ารายงานไม่สำเร็จ', { id: 'pdf-toast' });
+    } finally {
+      setExporting(false);
+    }
+  };
+
+  // สร้าง PDF ด้วย jsPDF + autoTable — แบ่งหน้าอัตโนมัติจริง ไม่ตัดกลางแถว ขึ้นหัวตารางซ้ำทุกหน้า
+  // ⚠️ ทางนี้ภาษาไทยเพี้ยน: jsPDF ไม่จัดตำแหน่งสระ/วรรณยุกต์ (ไม่อ่าน GPOS)
+  //    "ที่" จะออกมาเป็น "ที" — เก็บไว้เทียบกับทางสั่งพิมพ์ก่อนตัดสินใจว่าจะใช้ทางไหน
+  const executePDFExport = async () => {
+    if (exportFilteredLogs.length === 0) return toast.error('ไม่มีข้อมูลในช่วงเวลาที่เลือก');
+
+    setExporting(true);
+    toast.loading('กำลังสร้างไฟล์ PDF...', { id: 'pdf-toast' });
+    try {
+      const [{ jsPDF }, { default: autoTable }, { sarabunRegular }, { rows, summaryRows, periodLabel }] = await Promise.all([
+        import('jspdf'),
+        import('jspdf-autotable'),
+        import('../../utils/thaiFont'),
+        buildReportData()
+      ]);
+
       const doc = new jsPDF({ orientation: 'landscape', unit: 'mm', format: 'a4' });
       doc.addFileToVFS('Sarabun-Regular.ttf', sarabunRegular);
       doc.addFont('Sarabun-Regular.ttf', 'Sarabun', 'normal');
@@ -369,9 +433,6 @@ export default function Homepage() {
       doc.addFont('Sarabun-Regular.ttf', 'Sarabun', 'bold');
       doc.setFont('Sarabun');
 
-      let periodLabel = exportType === 'day' ? `วันที่ ${exportValue}` : exportType === 'month' ? `เดือน ${exportValue}` : `ปี ${exportValue}`;
-      if (exportTypeFilter !== 'all') periodLabel += ` · ${txTypeLabel(exportTypeFilter)}`;
-      if (exportProjectFilter !== 'all') periodLabel += ` · โปรเจกต์: ${exportProjectFilter}`;
       const IMG_COL = 3; // index คอลัมน์รูปใน body
 
       autoTable(doc, {
@@ -404,23 +465,6 @@ export default function Homepage() {
           doc.text(`หน้า ${doc.internal.getNumberOfPages()}`, 289, 203, { align: 'right' });
         }
       });
-
-      // ---- ตารางสรุปยอดรวมต่อสินค้า (ต่อท้ายรายงาน) ----
-      const summaryMap = new Map(); // sku -> { name, inbound, outbound }
-      for (const tx of exportFilteredLogs) {
-        // นับเฉพาะนำเข้า/เบิกออกจริง — ข้ามการปรับยอด (ADJUSTMENT) และประเภทอื่น
-        if (tx.type !== 'INBOUND' && tx.type !== 'OUTBOUND') continue;
-        for (const item of getItemsToRender(tx)) {
-          const sku = item.sku || '-';
-          const e = summaryMap.get(sku) || { name: item.productName || '-', inbound: 0, outbound: 0 };
-          if (tx.type === 'INBOUND') e.inbound += Number(item.requestedQty) || 0;
-          else e.outbound += Number(item.approvedQty) || 0;
-          summaryMap.set(sku, e);
-        }
-      }
-      const summaryRows = [...summaryMap.entries()]
-        .map(([sku, v]) => [sku, v.name, String(v.inbound), String(v.outbound)])
-        .sort((a, b) => a[0].localeCompare(b[0]));
 
       if (summaryRows.length > 0) {
         doc.addPage();
@@ -880,11 +924,22 @@ export default function Homepage() {
                   : <>พบข้อมูลที่ตรงกับเงื่อนไข: <strong className="text-primary">{exportFilteredLogs.length}</strong> รายการ</>}
               </div>
             </div>
-            <div className="flex justify-end gap-3 pt-4 border-t border-base-200">
+            {/* สองทางให้เทียบกัน — ทางสั่งพิมพ์ภาษาไทยถูก ทางดาวน์โหลดตรงเร็วกว่าแต่วรรณยุกต์เพี้ยน */}
+            <p className="pt-3 text-[11px] leading-relaxed text-base-content/60">
+              แนะนำ <b>สั่งพิมพ์เป็น PDF</b> เพราะภาษาไทยแสดงถูกต้องทุกตัว —
+              ปุ่มดาวน์โหลดตรงจะเร็วกว่าแต่วรรณยุกต์บางคำเพี้ยน (เช่น “ที่” กลายเป็น “ที”)
+            </p>
+            <div className="flex flex-wrap justify-end gap-2 pt-3 border-t border-base-200">
               <button className="btn btn-ghost" onClick={() => setExportModalOpen(false)} disabled={exporting}>ยกเลิก</button>
-              <button className="btn btn-primary text-white" onClick={executePDFExport} disabled={exporting || exportLoading || exportFilteredLogs.length === 0}>
+              <button className="btn btn-outline" onClick={executePDFExport} disabled={exporting || exportLoading || exportFilteredLogs.length === 0}
+                title="ดาวน์โหลดไฟล์ทันที แต่วรรณยุกต์ไทยบางคำเพี้ยน">
                 {exporting && <span className="loading loading-spinner loading-xs"></span>}
-                ดาวน์โหลดไฟล์ PDF
+                ดาวน์โหลดตรง (ไทยเพี้ยน)
+              </button>
+              <button className="btn btn-primary text-white" onClick={executePrintExport} disabled={exporting || exportLoading || exportFilteredLogs.length === 0}
+                title="เปิดกล่องพิมพ์ของเบราว์เซอร์ แล้วเลือกบันทึกเป็น PDF">
+                {exporting && <span className="loading loading-spinner loading-xs"></span>}
+                สั่งพิมพ์เป็น PDF (ไทยถูก)
               </button>
             </div>
           </div>
