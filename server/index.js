@@ -16,6 +16,7 @@ import storageMapRoutes from './routes/storageMapRoutes.js';
 import uploadRoutes from './upload.js';
 import eventsRouter from './events.js';
 import pushRoutes from './routes/pushRoutes.js';
+import reportRoutes from './routes/reportRoutes.js';
 import { config } from './config.js';
 import { verifyEmailTransport } from './utils/sendEmail.js';
 
@@ -53,6 +54,7 @@ app.use('/api', storageMapRoutes);
 app.use('/api', uploadRoutes);
 app.use('/api', eventsRouter);
 app.use('/api', pushRoutes);
+app.use('/api', reportRoutes);
 
 // เสิร์ฟหน้าเว็บที่ build แล้ว (dist/) จาก Express เอง → เหลือ URL เดียวทั้งเว็บและ API
 // ทำให้ทั้งการเปิดผ่าน tunnel และการ deploy จริงง่ายขึ้น (ไม่ต้องเปิด 2 port / ไม่ติด CORS)
