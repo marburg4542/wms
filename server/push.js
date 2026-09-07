@@ -51,19 +51,22 @@ export const sendPushToUser = async (username, payload) => {
   return { total: rows.length, sent, failed: errors.length, errors };
 };
 
-// ส่ง push ให้ "ทุกคนที่กดอนุมัติได้" — Admin/Manager ที่สถานะ Active
+// ส่ง push ให้ "ทุกคนที่กดอนุมัติเรื่องนั้นได้" ที่สถานะ Active
 //
-// ยิงพร้อมกันทุกเครื่องโดยตั้งใจ ไม่มีระบบเวร: ใครเห็นก่อนและว่างก่อนรับใบไปก่อน
-// ถ้าเจาะจงคนเดียวแล้วเขาลาหรือปิดเครื่อง ใบเบิกจะค้างโดยไม่มีใครรู้
+// ยิงพร้อมกันทุกเครื่องโดยตั้งใจ ไม่มีระบบเวร: ใครเห็นก่อนและว่างก่อนรับงานไปก่อน
+// ถ้าเจาะจงคนเดียวแล้วเขาลาหรือปิดเครื่อง เรื่องจะค้างโดยไม่มีใครรู้
 //
+// roles   = ต้องตรงกับ authorizeRoles ของ route ที่ใช้กดอนุมัติเรื่องนั้นจริงๆ
+//           (ใบเบิก = Admin/Manager · สมาชิกใหม่ = Admin เท่านั้น ดู userRoutes.js)
+//           ยิงผิดกลุ่ม = ปลุกคนที่กดเข้าไปแล้วเจอ 403 ทำอะไรไม่ได้ แย่กว่าไม่เตือน
 // exclude = คนที่เป็นต้นเรื่องเอง (Admin ที่กดเบิกของตัวเองไม่ต้องเตือนตัวเอง)
-export const sendPushToApprovers = async (payload, { exclude } = {}) => {
-  if (!enabled) return { recipients: 0, sent: 0 };
+export const sendPushToApprovers = async (payload, { exclude, roles = ['Admin', 'Manager'] } = {}) => {
+  if (!enabled || roles.length === 0) return { recipients: 0, sent: 0 };
 
   const approvers = db.prepare(`
     SELECT username FROM app_users
-    WHERE role IN ('Admin', 'Manager') AND status = 'Active'
-  `).all().map((row) => row.username).filter((name) => name !== exclude);
+    WHERE role IN (${roles.map(() => '?').join(', ')}) AND status = 'Active'
+  `).all(...roles).map((row) => row.username).filter((name) => name !== exclude);
 
   const results = await Promise.all(approvers.map((name) => sendPushToUser(name, payload)));
   return {

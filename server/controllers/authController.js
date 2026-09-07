@@ -6,6 +6,7 @@ import { sendEmail } from '../utils/sendEmail.js';
 import { config } from '../config.js';
 import db, { logAudit } from '../db.js';
 import { broadcast } from '../events.js';
+import { sendPushToApprovers } from '../push.js';
 
 const RESET_TOKEN_TTL_MS = 1000 * 60 * 30;
 
@@ -94,6 +95,17 @@ export const register = async (req, res) => {
   const newUser = createUser({ username, email, password: hashedPassword, role: 'Viewer', status: 'Pending' });
   logAudit(username, 'auth.register', 'user', newUser.id, { status: 'Pending' });
   broadcast('users'); // ให้กระดิ่งของ Admin เด้งทันทีที่มีคนสมัคร
+
+  // กระดิ่งข้างบนดังเฉพาะแท็บที่ Admin เปิดค้างไว้ — คนสมัครมักสมัครนอกเวลางาน
+  // ถ้าไม่ยิง push คำขอจะค้างข้ามวันจนคนสมัครนึกว่าระบบพัง แล้วโทรตามเอง
+  //
+  // เฉพาะ Admin เท่านั้น: อนุมัติสมาชิกเป็นสิทธิ์ Admin ล้วน (userRoutes.js ใช้ authorizeRoles('Admin'))
+  // Manager ได้รับไปก็กดไม่ได้ เข้าหน้า /users ยังไม่ได้เลย
+  sendPushToApprovers({
+    title: '👤 มีคนสมัครสมาชิกใหม่',
+    body: `"${username}" รอการอนุมัติ`,
+    url: '/users'
+  }, { roles: ['Admin'] }).catch(() => {});
 
   await sendEmail(email, 'WMS - ยืนยันการสมัครสมาชิก (รอผลอนุมัติ)', `
     <h2>สวัสดีคุณ ${username}</h2>
