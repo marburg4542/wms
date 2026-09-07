@@ -1,6 +1,6 @@
 import db, { logAudit } from '../db.js';
 import { broadcast } from '../events.js';
-import { sendPushToUser } from '../push.js';
+import { sendPushToUser, sendPushToApprovers } from '../push.js';
 import { resolveProjectName } from './projectController.js';
 import { availableForProject, getReservedLocationIds, getStagingLocations, readItemStockContext } from '../utils/projectStock.js';
 import { getItemLocations, syncPrimaryLocation } from '../utils/itemLocations.js';
@@ -214,6 +214,18 @@ export const createOutboundRequest = (req, res) => {
     })();
 
     broadcast('transactions');
+
+    // เตือนผู้อนุมัติทุกคนทันทีที่ใบเข้า — broadcast ข้างบนปลุกได้เฉพาะแท็บที่เปิดค้างอยู่เท่านั้น
+    // ปิดแอปเมื่อไหร่ใบเบิกจะนอนรอเงียบๆ จนกว่าจะมีคนนึกขึ้นได้ว่าต้องเข้ามาดู
+    const [firstItem] = normalizedItems;
+    const moreCount = normalizedItems.length - 1;
+    sendPushToApprovers({
+      title: `📦 ใบเบิกใหม่รออนุมัติ ${transactionId}`,
+      body: `${req.user.username} · ${canonicalProject}
+${firstItem.productName} x${firstItem.quantity}${moreCount > 0 ? ` และอีก ${moreCount} รายการ` : ''}`,
+      url: '/homepage'
+    }, { exclude: req.user.username }).catch(() => {});
+
     res.status(201).json({ success: true, message: 'ส่งคำขอเบิกแบบชุดสำเร็จ', transactionId });
   } catch (err) {
     handleError(res, err);

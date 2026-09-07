@@ -50,3 +50,24 @@ export const sendPushToUser = async (username, payload) => {
 
   return { total: rows.length, sent, failed: errors.length, errors };
 };
+
+// ส่ง push ให้ "ทุกคนที่กดอนุมัติได้" — Admin/Manager ที่สถานะ Active
+//
+// ยิงพร้อมกันทุกเครื่องโดยตั้งใจ ไม่มีระบบเวร: ใครเห็นก่อนและว่างก่อนรับใบไปก่อน
+// ถ้าเจาะจงคนเดียวแล้วเขาลาหรือปิดเครื่อง ใบเบิกจะค้างโดยไม่มีใครรู้
+//
+// exclude = คนที่เป็นต้นเรื่องเอง (Admin ที่กดเบิกของตัวเองไม่ต้องเตือนตัวเอง)
+export const sendPushToApprovers = async (payload, { exclude } = {}) => {
+  if (!enabled) return { recipients: 0, sent: 0 };
+
+  const approvers = db.prepare(`
+    SELECT username FROM app_users
+    WHERE role IN ('Admin', 'Manager') AND status = 'Active'
+  `).all().map((row) => row.username).filter((name) => name !== exclude);
+
+  const results = await Promise.all(approvers.map((name) => sendPushToUser(name, payload)));
+  return {
+    recipients: approvers.length,
+    sent: results.reduce((total, result) => total + result.sent, 0)
+  };
+};
