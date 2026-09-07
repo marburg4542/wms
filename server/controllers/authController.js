@@ -6,6 +6,7 @@ import { sendEmail } from '../utils/sendEmail.js';
 import { config } from '../config.js';
 import db, { logAudit } from '../db.js';
 import { broadcast } from '../events.js';
+import { sendPushToRoles } from '../push.js';
 
 const RESET_TOKEN_TTL_MS = 1000 * 60 * 30;
 
@@ -94,6 +95,17 @@ export const register = async (req, res) => {
   const newUser = createUser({ username, email, password: hashedPassword, role: 'Viewer', status: 'Pending' });
   logAudit(username, 'auth.register', 'user', newUser.id, { status: 'Pending' });
   broadcast('users'); // ให้กระดิ่งของ Admin เด้งทันทีที่มีคนสมัคร
+
+  // แจ้งแอดมินว่ามีคนรออนุมัติ — ผู้สมัครใช้งานไม่ได้จนกว่าจะมีคนกดอนุมัติ
+  // ถ้าไม่มีใครเห็น คนสมัครจะรอเก้อ
+  //
+  // ส่งเฉพาะ Admin ไม่รวม Manager เพราะหน้าจัดการผู้ใช้เปิดได้แค่ Admin
+  // ถ้าส่งให้ Manager ด้วย กดแจ้งเตือนแล้วจะโดนเด้งออกจากหน้า
+  sendPushToRoles(['Admin'], {
+    title: 'มีผู้สมัครใช้งานใหม่',
+    body: `${username} (${email}) รออนุมัติอยู่`,
+    url: '/users'
+  }).catch(() => {});
 
   await sendEmail(email, 'WMS - ยืนยันการสมัครสมาชิก (รอผลอนุมัติ)', `
     <h2>สวัสดีคุณ ${username}</h2>

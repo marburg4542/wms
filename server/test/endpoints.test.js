@@ -11,6 +11,7 @@ const racks = await import('../controllers/rackController.js');
 const rooms = await import('../controllers/roomController.js');
 const storage = await import('../controllers/storageItemController.js');
 const transactions = await import('../controllers/transactionController.js');
+const push = await import('../push.js');
 
 // ---- สร้างคลังจำลองให้ครบทุกชนิดที่ระบบรองรับ ----
 const planId = db.prepare('SELECT id FROM floor_plans LIMIT 1').get().id;
@@ -183,6 +184,40 @@ test('คืนของจากใบที่ยังไม่ส่งม�
   });
   assert.equal(res.success, false, 'ใบที่ยังไม่ส่งมอบต้องคืนไม่ได้');
   assert.match(res.message, /ยกเลิกจอง/, 'ต้องบอกทางเลือกที่ถูกต้องให้ผู้ใช้');
+});
+
+// ---- รหัสใบรายการต้องไม่ซ้ำ ----
+// เดิมสร้างจาก Date.now() ตรงๆ สองใบในมิลลิวินาทีเดียวกันจะได้รหัสเดียวกัน
+// แล้วชน UNIQUE constraint กลายเป็น error 500 — เจอจริงตอนคืนของสองรายการติดกัน
+test('สร้างใบรายการรัวๆ ในมิลลิวินาทีเดียวกันต้องไม่ได้รหัสซ้ำ', async () => {
+  const ids = [];
+  for (let i = 0; i < 12; i++) {
+    const res = await callOk('createInboundTransaction', transactions.createInboundTransaction, {
+      body: { sku, name: 'สินค้าทดสอบ', quantity: 1, note: `รัว ${i}` }
+    });
+    ids.push(res.transactionId || db.prepare('SELECT transactionId FROM wms_transactions ORDER BY id DESC LIMIT 1').get().transactionId);
+  }
+  assert.equal(new Set(ids).size, ids.length, `รหัสซ้ำกัน: ${ids.join(', ')}`);
+});
+
+// ---- เลือกผู้รับแจ้งเตือนตามบทบาท ----
+test('แจ้งเตือนตามบทบาท: ส่งเฉพาะบัญชีที่ใช้งานอยู่ และไม่ส่งกลับหาคนที่เป็นต้นเหตุ', async () => {
+  const add = db.prepare("INSERT INTO app_users (username, email, password, role, status) VALUES (?, ?, 'x', ?, ?)");
+  add.run('adminA', 'a@test.local', 'Admin', 'Active');
+  add.run('managerB', 'b@test.local', 'Manager', 'Active');
+  add.run('adminPending', 'c@test.local', 'Admin', 'Pending');   // ยังไม่อนุมัติ ไม่ควรได้รับ
+  add.run('operatorC', 'd@test.local', 'Operator', 'Active');    // คนละบทบาท ไม่ควรได้รับ
+
+  // ไม่มีใครมี subscription ในฐานข้อมูลทดสอบ จึงไม่มีการยิงออกเน็ตจริง
+  // ดูที่ users ว่าเลือกคนถูกกี่คน
+  const all = await push.sendPushToRoles(push.WAREHOUSE_STAFF_ROLES, { title: 't', body: 'b', url: '/' });
+  assert.equal(all.users, 2, 'ต้องได้เฉพาะ adminA กับ managerB');
+
+  const excluded = await push.sendPushToRoles(push.WAREHOUSE_STAFF_ROLES, { title: 't', body: 'b', url: '/' }, { exclude: 'adminA' });
+  assert.equal(excluded.users, 1, 'คนที่เป็นต้นเหตุต้องไม่ได้รับแจ้งเตือนของตัวเอง');
+
+  const adminOnly = await push.sendPushToRoles(['Admin'], { title: 't', body: 'b', url: '/' });
+  assert.equal(adminOnly.users, 1, 'ระบุบทบาทเดียวต้องได้เฉพาะบทบาทนั้น');
 });
 
 test.after(() => temp.cleanup(db));

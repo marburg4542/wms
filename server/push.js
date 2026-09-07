@@ -50,3 +50,30 @@ export const sendPushToUser = async (username, payload) => {
 
   return { total: rows.length, sent, failed: errors.length, errors };
 };
+
+// ส่ง push ให้ทุกคนที่มีบทบาทตามที่ระบุ (ใช้กับเหตุการณ์ที่ผู้ดูแลต้องรู้ เช่น มีคำขอเบิกเข้ามา)
+//
+// exclude = ไม่ต้องส่งให้คนที่เป็นต้นเหตุเอง เพราะเขารู้อยู่แล้วว่าเพิ่งทำอะไรไป
+// (แอดมินกดเบิกเองก็ไม่ควรได้แจ้งเตือนคำขอของตัวเอง)
+//
+// ส่งเฉพาะบัญชีที่ Active — บัญชีที่รออนุมัติหรือถูกระงับไม่ควรได้รับเรื่องภายใน
+export const sendPushToRoles = async (roles, payload, { exclude = null } = {}) => {
+  if (!enabled || !roles?.length) return { users: 0, total: 0, sent: 0, failed: 0, errors: ['push disabled'] };
+
+  const placeholders = roles.map(() => '?').join(',');
+  const usernames = db.prepare(
+    `SELECT username FROM app_users WHERE role IN (${placeholders}) AND status = 'Active'`
+  ).all(...roles).map((row) => row.username).filter((name) => name !== exclude);
+
+  const results = await Promise.all(usernames.map((name) => sendPushToUser(name, payload)));
+  return results.reduce((acc, r) => ({
+    users: acc.users + 1,
+    total: acc.total + r.total,
+    sent: acc.sent + r.sent,
+    failed: acc.failed + r.failed,
+    errors: [...acc.errors, ...r.errors]
+  }), { users: 0, total: 0, sent: 0, failed: 0, errors: [] });
+};
+
+// บทบาทที่ต้องรับรู้ความเคลื่อนไหวของคลัง
+export const WAREHOUSE_STAFF_ROLES = ['Admin', 'Manager'];
