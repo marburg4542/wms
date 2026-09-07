@@ -15,9 +15,18 @@ import bcrypt from 'bcryptjs';
 import { config } from '../config.js';
 import { logAudit } from '../db.js';
 import { broadcast } from '../events.js';
+import { sendPushToUser } from '../push.js';
 
 const VALID_STATUSES = ['Pending', 'Active', 'Denied'];
 const VALID_ROLES = ['Admin', 'Manager', 'Operator', 'Viewer'];
+
+// ชื่อบทบาทภาษาไทย — ต้องตรงกับ roleLabel ใน src/utils/labels.js ที่หน้าเว็บใช้
+const ROLE_LABEL = {
+  Admin: 'ผู้ดูแลระบบ',
+  Manager: 'ผู้จัดการ',
+  Operator: 'พนักงาน',
+  Viewer: 'ผู้ชม (ดูอย่างเดียว)'
+};
 
 export const getUsersList = (req, res) => {
   // ไม่ส่ง password กลับไปที่หน้าเว็บ
@@ -83,6 +92,18 @@ export const updateUserRole = (req, res) => {
 
   updateUser(userId, { role });
   logAudit(req.user?.username, 'user.role_update', 'user', userId, { role });
+
+  // แจ้งเจ้าตัวว่าสิทธิ์เปลี่ยน — ไม่งั้นเมนูในแอปเปลี่ยนไปเฉยๆ โดยไม่มีคำอธิบาย
+  // ข้ามถ้าแอดมินเปลี่ยนบทบาทของตัวเอง เพราะรู้อยู่แล้ว
+  if (existing.username !== req.user?.username) {
+    sendPushToUser(existing.username, {
+      title: 'สิทธิ์การใช้งานของคุณเปลี่ยนแล้ว',
+      body: `จาก "${ROLE_LABEL[existing.role] || existing.role}" เป็น "${ROLE_LABEL[role] || role}"
+เข้าสู่ระบบใหม่เพื่อให้เมนูอัปเดต`,
+      url: '/homepage'
+    }).catch(() => {});
+  }
+
   return res.json({ success: true });
 };
 

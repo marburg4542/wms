@@ -623,6 +623,16 @@ export const markPickedUp = (req, res) => {
     broadcast('transactions');
     broadcast('products');
 
+    // ยืนยันกลับไปที่ผู้ขอว่าระบบบันทึกการรับของและตัดสต็อกแล้ว — ปิดวงจรใบเบิก
+    // ข้ามถ้าผู้ขอเป็นคนกดเอง เพราะเขาเพิ่งทำอยู่ตรงหน้าจอ
+    if (tx.requesterUsername && tx.requesterUsername !== req.user.username) {
+      sendPushToUser(tx.requesterUsername, {
+        title: `รับของเรียบร้อย ${tx.transactionId || tx.id}`,
+        body: `ระบบบันทึกการรับของและตัดสต็อก ${approvedItems.length} รายการแล้ว`,
+        url: '/homepage'
+      }).catch(() => {});
+    }
+
     // ของออกจากคลังจริงแล้ว — คนดูแลคลังคนอื่นควรรู้ด้วย ไม่ใช่แค่คนที่กดปุ่ม
     sendPushToRoles(WAREHOUSE_STAFF_ROLES, {
       title: `ส่งมอบแล้ว ${tx.transactionId || tx.id}`,
