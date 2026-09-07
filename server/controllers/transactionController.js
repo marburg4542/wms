@@ -1,6 +1,6 @@
 import db, { logAudit } from '../db.js';
 import { broadcast } from '../events.js';
-import { sendPushToUser } from '../push.js';
+import { sendPushToUser, sendPushToRoles, WAREHOUSE_STAFF_ROLES } from '../push.js';
 import { resolveProjectName } from './projectController.js';
 import { availableForProject, getReservedLocationIds, getStagingLocations, readItemStockContext } from '../utils/projectStock.js';
 import { getItemLocations, syncPrimaryLocation } from '../utils/itemLocations.js';
@@ -33,6 +33,18 @@ const toNonNegativeInteger = (value) => {
 };
 
 const normalizeSku = (value) => String(value || '').trim().toUpperCase();
+
+// รหัสใบรายการ — เดิมใช้ Date.now() ตรงๆ ถ้าสร้างสองใบในมิลลิวินาทีเดียวกันรหัสจะซ้ำ
+// แล้วชน UNIQUE constraint ของ transactionId กลายเป็น error 500 โดยไม่มีใครเข้าใจว่าทำไม
+// (เจอตอนคืนของสองรายการติดกัน ซึ่งเป็นการใช้งานปกติ)
+//
+// เก็บเลขล่าสุดไว้แล้วบวกทีละ 1 เมื่อชนกัน — รูปแบบรหัสยังเหมือนเดิมทุกประการ
+let lastStamp = 0;
+const nextTransactionId = (prefix) => {
+  const now = Date.now();
+  lastStamp = now > lastStamp ? now : lastStamp + 1;
+  return `${prefix}-${lastStamp}`;
+};
 
 const getCurrentStock = (itemId) => {
   // item_id เป็น TEXT เสมอ แต่บาง record เก็บ productId มาเป็นตัวเลข (ตารางสคีมาเก่า)
@@ -191,7 +203,7 @@ export const createOutboundRequest = (req, res) => {
     });
 
     const requestDate = new Date().toISOString();
-    const transactionId = `REQ-${Date.now()}`;
+    const transactionId = nextTransactionId('REQ');
 
     db.transaction(() => {
       const info = db.prepare(`
@@ -214,6 +226,18 @@ export const createOutboundRequest = (req, res) => {
     })();
 
     broadcast('transactions');
+
+    // แจ้งผู้ดูแลว่ามีคำขอรออยู่ — broadcast อัปเดตได้เฉพาะหน้าจอที่เปิดค้างไว้
+    // ถ้าไม่มี push ผู้อนุมัติจะไม่รู้เลยจนกว่าจะเปิดแอปมาดูเอง
+    const itemCount = normalizedItems.length;
+    const firstName = normalizedItems[0]?.productName || normalizedItems[0]?.sku || '';
+    sendPushToRoles(WAREHOUSE_STAFF_ROLES, {
+      title: `คำขอเบิกใหม่ ${transactionId}`,
+      body: `${req.user.username} · โครงการ ${canonicalProject}
+${firstName}${itemCount > 1 ? ` และอีก ${itemCount - 1} รายการ` : ''}`,
+      url: '/homepage'
+    }, { exclude: req.user.username }).catch(() => {});
+
     res.status(201).json({ success: true, message: 'ส่งคำขอเบิกแบบชุดสำเร็จ', transactionId });
   } catch (err) {
     handleError(res, err);
@@ -233,7 +257,7 @@ export const createInboundTransaction = (req, res) => {
     }
 
     const requestDate = new Date().toISOString();
-    const transactionId = `INB-${Date.now()}`;
+    const transactionId = nextTransactionId('INB');
 
     db.transaction(() => {
       let item = db.prepare('SELECT item_id, item_name FROM items WHERE item_id = ?').get(normalizedSku);
@@ -335,7 +359,7 @@ export const adjustStock = (req, res) => {
     }
 
     const now = new Date().toISOString();
-    const transactionId = `ADJ-${Date.now()}`;
+    const transactionId = nextTransactionId('ADJ');
     const absQty = Math.abs(delta);
 
     // ปรับยอดลงแล้วของบนชั้นเกินยอดที่นับได้เท่าไร ต้องหักออกจากตำแหน่งไหนบ้าง
@@ -598,6 +622,16 @@ export const markPickedUp = (req, res) => {
 
     broadcast('transactions');
     broadcast('products');
+
+    // ของออกจากคลังจริงแล้ว — คนดูแลคลังคนอื่นควรรู้ด้วย ไม่ใช่แค่คนที่กดปุ่ม
+    sendPushToRoles(WAREHOUSE_STAFF_ROLES, {
+      title: `ส่งมอบแล้ว ${tx.transactionId || tx.id}`,
+      body: `${tx.requesterUsername || '-'} รับของไปแล้ว · ตัดสต็อก ${approvedItems.length} รายการ`
+        + (shortages.length ? `
+⚠️ ยอดติดลบ ${shortages.length} รายการ` : ''),
+      url: '/homepage'
+    }, { exclude: req.user.username }).catch(() => {});
+
     res.json({
       success: true,
       message: 'บันทึกการส่งมอบและตัดสต็อกเรียบร้อย'
@@ -753,7 +787,7 @@ export const returnItems = (req, res) => {
     if (duplicates.length > 0) throw new ValidationError(`มีสินค้าซ้ำในรายการที่คืน: ${[...new Set(duplicates)].join(', ')}`);
 
     const now = new Date().toISOString();
-    const transactionId = `RET-${Date.now()}`;
+    const transactionId = nextTransactionId('RET');
     const usable = lines.filter((line) => line.condition === 'usable');
     const damaged = lines.filter((line) => line.condition === 'damaged');
 
@@ -803,6 +837,19 @@ export const returnItems = (req, res) => {
 
     broadcast('transactions');
     broadcast('products');
+
+    // ของกลับเข้าคลัง ต้องมีคนไปผูกตำแหน่งจัดเก็บให้ — ถ้าไม่แจ้งจะค้างอยู่ที่ "ยังไม่ระบุตำแหน่ง"
+    const usableQty = usable.reduce((sum, line) => sum + line.quantity, 0);
+    const damagedQty = damaged.reduce((sum, line) => sum + line.quantity, 0);
+    sendPushToRoles(WAREHOUSE_STAFF_ROLES, {
+      title: `คืนของเข้าคลัง ${transactionId}`,
+      body: `จากใบ ${tx.transactionId}`
+        + (usableQty ? `
+ใช้ได้ ${usableQty} ชิ้น — รอผูกตำแหน่งจัดเก็บ` : '')
+        + (damagedQty ? `
+ชำรุด ${damagedQty} ชิ้น (ไม่เข้าสต็อก)` : ''),
+      url: '/storage'
+    }, { exclude: req.user.username }).catch(() => {});
 
     const parts = [];
     if (usable.length > 0) parts.push(`คืนเข้าสต็อก ${usable.reduce((sum, line) => sum + line.quantity, 0)} ชิ้น`);
