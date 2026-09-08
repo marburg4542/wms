@@ -51,6 +51,7 @@ export default function Inventory() {
   // ระบบตะกร้าสินค้า
   const [cart, setCart] = useState([]);
   const [cartModal, setCartModal] = useState(false);
+  const [submitting, setSubmitting] = useState(false); // กันกดปุ่มส่งซ้ำระหว่างรอเซิร์ฟเวอร์ตอบ
   const [reqProject, setReqProject] = useState('');
   const [projectList, setProjectList] = useState([]);      // [{id, name}] รายชื่อโปรเจกต์
   const [selectedProject, setSelectedProject] = useState(''); // ตัวกรอง/โปรเจกต์ปัจจุบันของการเบิก (เติมให้ตะกร้าอัตโนมัติ)
@@ -198,6 +199,8 @@ export default function Inventory() {
 
   const submitCartRequest = async (e) => {
     e.preventDefault();
+    // ส่งอยู่แล้วห้ามยิงซ้ำ — 7 ก.ย. 2026 ได้ใบเบิกเดียวกัน 6 ใบเพราะจอไม่ขยับระหว่างรอแล้วผู้ใช้กดรัว
+    if (submitting) return;
     if (cart.length === 0) return toast.error('ไม่มีสินค้าในใบเบิก');
     if (!reqProject.trim()) return toast.error('กรุณาระบุชื่อโปรเจกต์');
 
@@ -207,6 +210,7 @@ export default function Inventory() {
       if (qty > item.stock) return toast.error(`${item.sku} ขอเบิกเกินสต็อกคงเหลือ (${item.stock})`);
     }
 
+    setSubmitting(true);
     try {
       const res = await fetchApi('/api/transactions/request', {
         method: 'POST',
@@ -222,7 +226,19 @@ export default function Inventory() {
         setCartModal(false);
         fetchProducts();
       }
-    } catch { toast.error('เกิดข้อผิดพลาด'); }
+    } catch (err) {
+      // fetchApi เด้งข้อความจริงให้แล้วทุกกรณี (ทั้งเหตุผลจาก server และตอนหมดเวลา)
+      // เดิมทับด้วย 'เกิดข้อผิดพลาด' ทำให้ข้อความที่บอกว่าใบเข้าไปแล้วถูกกลบจนผู้ใช้ไม่มีทางรู้
+      //
+      // หมดเวลา = ไม่รู้ว่าใบเข้าไปแล้วหรือยัง ปิด modal กับรีเฟรชรายการให้ไปดูของจริงในประวัติ
+      // แต่ไม่ล้างตะกร้า เผื่อไม่เข้าจริงจะได้ไม่ต้องหยิบของใส่ใหม่ทั้งหมด
+      if (err?.timedOut) {
+        setCartModal(false);
+        fetchProducts();
+      }
+    } finally {
+      setSubmitting(false);
+    }
   };
 
   const addProjectHandler = async () => {
@@ -541,8 +557,11 @@ export default function Inventory() {
                 )}
               </div>
               <div className="flex justify-end gap-2">
-                <button type="button" className="btn btn-ghost" onClick={() => setCartModal(false)}>ปิด</button>
-                <button type="submit" className="btn btn-primary text-white">ส่งใบเบิก</button>
+                <button type="button" className="btn btn-ghost" disabled={submitting} onClick={() => setCartModal(false)}>ปิด</button>
+                <button type="submit" className="btn btn-primary text-white gap-1" disabled={submitting}>
+                  {submitting && <span className="loading loading-spinner loading-xs" />}
+                  {submitting ? 'กำลังส่ง...' : 'ส่งใบเบิก'}
+                </button>
               </div>
             </form>
           </div>

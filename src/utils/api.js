@@ -8,19 +8,33 @@ export const getAssetUrl = (url) => {
   return url.startsWith('http') || url.startsWith('data:') ? url : `${API_BASE_URL}${url}`;
 };
 
+// เวลารอสูงสุดก่อนยอมแพ้ — เดิมไม่มีเลย คำขอที่ไปไม่ถึงเซิร์ฟเวอร์จึงหมุนค้างได้ไม่จำกัด
+// พอจอไม่ขึ้นอะไรสักอย่าง ผู้ใช้ก็กดซ้ำ แล้วคำขอที่คิวไว้หลุดออกมาพร้อมกันตอนเน็ตติด
+// (7 ก.ย. 2026 ได้ใบเบิกเดียวกัน 6 ใบห่างกันรวม 299 มิลลิวินาที จากสาเหตุนี้)
+const DEFAULT_TIMEOUT_MS = 20_000;
+// อัปโหลดรูปสินค้าไฟล์ใหญ่บนเน็ตมือถือกินเวลาเป็นนาทีได้ตามปกติ ไม่ใช่อาการค้าง จึงต้องให้เวลามากกว่า
+const UPLOAD_TIMEOUT_MS = 120_000;
+
 export const fetchApi = async (endpoint, options = {}) => {
-  const { suppressErrorToast = false, ...requestOptions } = options;
+  const { suppressErrorToast = false, timeoutMs, ...requestOptions } = options;
   const token = sessionStorage.getItem('token');
   const isFormData = requestOptions.body instanceof FormData;
-  
+  const method = (requestOptions.method || 'GET').toUpperCase();
+  const limitMs = timeoutMs ?? (isFormData ? UPLOAD_TIMEOUT_MS : DEFAULT_TIMEOUT_MS);
+
   const defaultHeaders = {
     ...(!isFormData && { 'Content-Type': 'application/json' }),
     ...(token && { 'Authorization': `Bearer ${token}` })
   };
 
+  // ใช้ AbortController ไม่ใช่ AbortSignal.timeout() เพราะไม่รู้ว่ามือถือพนักงานเครื่องไหนเก่าแค่ไหน
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), limitMs);
+
   try {
     const response = await fetch(`${API_BASE_URL}${endpoint}`, {
       ...requestOptions,
+      signal: controller.signal,
       headers: {
         ...defaultHeaders,
         ...requestOptions.headers,
@@ -69,9 +83,27 @@ export const fetchApi = async (endpoint, options = {}) => {
     return await response.json();
   } catch (error) {
     console.error(`🚨 [fetchApi] Error at ${endpoint}:`, error);
+
+    // หมดเวลารอ — ต้องแยกออกมาก่อน ไม่งั้นจะไปตกกรณีล่างแล้วเด้งข้อความคนละเรื่อง
+    if (error.name === 'AbortError') {
+      const seconds = Math.round(limitMs / 1000);
+      // การยกเลิกฝั่งเราไม่ได้แปลว่าเซิร์ฟเวอร์ไม่ได้ทำ คำขออาจไปถึงและบันทึกไปแล้วก็ได้
+      // ห้ามบอกว่า "ส่งไม่สำเร็จ" ลอยๆ ไม่งั้นผู้ใช้จะกดส่งใหม่ทันทีแล้วได้ใบซ้ำจริง
+      const timeoutError = new Error(
+        method === 'GET'
+          ? `โหลดข้อมูลไม่สำเร็จ — เซิร์ฟเวอร์ไม่ตอบภายใน ${seconds} วินาที`
+          : `เซิร์ฟเวอร์ไม่ตอบกลับภายใน ${seconds} วินาที — ยังไม่แน่ใจว่าบันทึกสำเร็จหรือไม่ กรุณาตรวจในประวัติก่อนส่งซ้ำ`
+      );
+      timeoutError.timedOut = true;
+      if (!suppressErrorToast) toast.error(timeoutError.message, { duration: 8000 });
+      throw timeoutError;
+    }
+
     if (!suppressErrorToast && !error.message.includes('API Error')) {
         toast.error('ไม่สามารถเชื่อมต่อกับเซิร์ฟเวอร์ได้ โปรดตรวจสอบว่า Backend เปิดทำงานอยู่หรือไม่');
     }
     throw error;
+  } finally {
+    clearTimeout(timer);
   }
 };

@@ -244,6 +244,77 @@ test('สร้างใบรายการรัวๆ ในมิลลิ�
   assert.equal(new Set(ids).size, ids.length, `รหัสซ้ำกัน: ${ids.join(', ')}`);
 });
 
+// ---- กันใบเบิกซ้ำจากการกดปุ่มรัว ----
+// 7 ก.ย. 2026 ได้ใบเบิกเดียวกันเป๊ะ 6 ใบ เข้ามาห่างกันรวม 299 มิลลิวินาที เพราะหน้าจอไม่ขยับ
+// ระหว่างรอ ผู้ใช้เลยกดซ้ำ แล้วคำขอที่คิวไว้หลุดออกมาพร้อมกันตอนเน็ตติด
+const madeDup = await callOk('createProduct (กันกดซ้ำ)', products.createProduct, {
+  body: { name: 'สินค้ากันกดซ้ำ', groupId: '01', groupName: 'ทดสอบ', unit: 'ชิ้น', latestCost: 5, initialStock: 60, rackId: shelf.rack.id, storageLevel: 3 }
+});
+const dupPayload = (username, extra = {}) => ({
+  body: { project: 'โครงการทดสอบ', items: [{ productId: madeDup.sku, quantity: 3 }], ...extra },
+  user: { username, role: 'Operator' }
+});
+const countRequestsOf = (username) => db.prepare(
+  "SELECT COUNT(*) c FROM wms_transactions WHERE type = 'OUTBOUND' AND requesterUsername = ?"
+).get(username).c;
+
+test('ส่งใบเบิกชุดเดิมรัวๆ ต้องได้ใบเดียว', async () => {
+  const first = await callOk('createOutboundRequest', transactions.createOutboundRequest, dupPayload('คนกดรัว'));
+
+  // ยิงซ้ำอีก 5 ครั้งเลียนแบบคำขอที่คิวไว้แล้วหลุดออกมาพร้อมกัน
+  for (let i = 0; i < 5; i++) {
+    const again = await call(transactions.createOutboundRequest, dupPayload('คนกดรัว'));
+    assert.equal(again.success, false, `ใบซ้ำครั้งที่ ${i + 2} ไม่ควรผ่าน`);
+    assert.ok(
+      again.message.includes(first.transactionId),
+      `ข้อความต้องบอกรหัสใบเดิมให้ตามไปดูได้ ไม่ใช่ปัดเฉยๆ: ${again.message}`
+    );
+  }
+
+  assert.equal(countRequestsOf('คนกดรัว'), 1, 'กดรัว 6 ครั้งต้องได้ใบเดียว');
+});
+
+test('เบิกคนละชุดติดกันยังส่งได้ปกติ', async () => {
+  await callOk('createOutboundRequest', transactions.createOutboundRequest, dupPayload('คนเบิกหลายชุด'));
+
+  // จำนวนต่างกัน = คนละใบ ต้องผ่าน
+  await callOk('createOutboundRequest (คนละจำนวน)', transactions.createOutboundRequest,
+    dupPayload('คนเบิกหลายชุด', { items: [{ productId: madeDup.sku, quantity: 5 }] }));
+
+  // ของชิ้นเดิมจำนวนเดิมแต่คนละโครงการ ต้องผ่าน
+  await callOk('createOutboundRequest (คนละโครงการ)', transactions.createOutboundRequest,
+    dupPayload('คนเบิกหลายชุด', { project: 'งานอื่น' }));
+
+  assert.equal(countRequestsOf('คนเบิกหลายชุด'), 3, 'ด่านกันซ้ำต้องไม่ไปขวางการเบิกที่ตั้งใจจริง');
+});
+
+test('พ้นหน้าต่างกันซ้ำแล้วส่งชุดเดิมได้', async () => {
+  await callOk('createOutboundRequest', transactions.createOutboundRequest, dupPayload('คนเบิกซ้ำทีหลัง'));
+
+  // ดันใบแรกให้เก่ากว่าหน้าต่าง 5 วินาที — เบิกของชิ้นเดิมให้อีกงานหนึ่งเป็นเรื่องปกติ ห้ามล็อกไว้ตลอด
+  db.prepare("UPDATE wms_transactions SET requestDate = ? WHERE requesterUsername = ? AND status = 'Pending'")
+    .run(new Date(Date.now() - 10_000).toISOString(), 'คนเบิกซ้ำทีหลัง');
+
+  await callOk('createOutboundRequest (พ้นหน้าต่างแล้ว)', transactions.createOutboundRequest, dupPayload('คนเบิกซ้ำทีหลัง'));
+  assert.equal(countRequestsOf('คนเบิกซ้ำทีหลัง'), 2, 'พ้น 5 วินาทีแล้วต้องส่งชุดเดิมได้อีก');
+});
+
+test('ใบแรกถูกอนุมัติทันทีก็ยังกันใบซ้ำที่ตามมาได้', async () => {
+  const first = await callOk('createOutboundRequest', transactions.createOutboundRequest, dupPayload('คนถูกอนุมัติไว'));
+  const txRow = db.prepare('SELECT id FROM wms_transactions WHERE transactionId = ?').get(first.transactionId);
+
+  // ผู้อนุมัติกดรับเรื่องก่อนที่คำขอซึ่งคิวค้างอยู่จะตามมาถึง — ใบแรกพ้นสถานะ Pending ไปแล้ว
+  // ถ้าด่านกันซ้ำดูแค่ Pending ใบที่สองจะหลุดเข้ามาเป็นใบจริงที่กันของซ้ำอีกชุด
+  await callOk('resolveTransaction', transactions.resolveTransaction, {
+    params: { id: String(txRow.id) },
+    body: { action: 'APPROVE', updatedItems: [{ productId: madeDup.sku, approvedQty: 3 }] }
+  });
+
+  const again = await call(transactions.createOutboundRequest, dupPayload('คนถูกอนุมัติไว'));
+  assert.equal(again.success, false, 'อนุมัติแล้วแต่ยังไม่มารับ = ใบเดิมยังมีชีวิตอยู่ ต้องยังกันซ้ำได้');
+  assert.equal(countRequestsOf('คนถูกอนุมัติไว'), 1, 'ต้องไม่มีใบที่สองเล็ดลอดเข้ามา');
+});
+
 // ---- เลือกผู้รับแจ้งเตือนตามบทบาท ----
 test('แจ้งเตือนตามบทบาท: ส่งเฉพาะบัญชีที่ใช้งานอยู่ และไม่ส่งกลับหาคนที่เป็นต้นเหตุ', async () => {
   const add = db.prepare("INSERT INTO app_users (username, email, password, role, status) VALUES (?, ?, 'x', ?, ?)");

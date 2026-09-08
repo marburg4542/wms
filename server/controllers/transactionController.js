@@ -46,6 +46,52 @@ const nextTransactionId = (prefix) => {
   return `${prefix}-${lastStamp}`;
 };
 
+// ด่านกันใบเบิกซ้ำจากการกดปุ่มรัว — 7 ก.ย. 2026 มีใบเดียวกันเป๊ะ 6 ใบเข้ามาห่างกันรวม 299 มิลลิวินาที
+// เพราะหน้าจอไม่ขยับระหว่างรอ ผู้ใช้เลยกดซ้ำ แล้วคำขอที่คิวไว้หลุดออกมาพร้อมกันตอนเน็ตติด
+// การสร้างใบเบิกเป็น endpoint เดียวในระบบที่ไม่มีด่านนี้ (resolve/pickup/cancelReservation/return
+// เช็คสถานะใบอยู่แล้ว กดซ้ำจึงตัดสต็อกซ้ำไม่ได้) จึงเป็นจุดเดียวที่การกดรัวสร้างความเสียหายจริง
+//
+// ตั้งไว้แค่ 5 วินาทีเพราะการกดรัวเกิดในเสี้ยววินาที — กว้างกว่านี้จะไปขวางคนหยิบของที่ต้อง
+// เบิกของชิ้นเดิมให้อีกงานหนึ่งห่างกันไม่กี่สิบวินาที ซึ่งเป็นการใช้งานปกติของคลัง ไม่ใช่ความผิดพลาด
+const DUPLICATE_REQUEST_WINDOW_MS = 5_000;
+
+// ลายเซ็นของใบ = "สินค้า×จำนวน" เรียงแล้ว — ลำดับที่หยิบใส่ตะกร้าต่างกันไม่ควรนับเป็นคนละใบ
+// cast เป็น String/Number ทั้งคู่เพราะ productId บางแถวเก็บมาเป็นตัวเลข (สคีมาเก่า) เทียบตรงๆ จะไม่ตรง
+const requestSignature = (rows) => rows
+  .map((row) => `${String(row.productId)}×${Number(row.qty)}`)
+  .sort()
+  .join('|');
+
+// หาใบที่เพิ่งส่งไปซึ่งเป็นใบเดียวกัน: คนเดียวกัน · โครงการเดียวกัน · ใบยังไม่จบ · ของตรงกันทุกตัว
+// คืนใบเดิมถ้าเจอ (null ถ้าไม่เจอ)
+//
+// "ใบยังไม่จบ" ใช้นิยามเดียวกับ activeSql ของ getFullTransactions — รออนุมัติ หรืออนุมัติแล้วแต่ยังไม่มารับ
+// เช็คแค่ Pending ไม่พอ: ถ้าผู้อนุมัติกดรับเรื่องภายใน 5 วินาที ใบแรกจะพ้นสถานะ Pending ไปแล้ว
+// แล้วใบที่คิวค้างอยู่จะหลุดด่านเข้ามาเป็นใบที่สองที่มีชีวิตจริง (ส่วนใบที่ถูกปฏิเสธ/ยกเลิก/รับของไปแล้ว
+// ถือว่าจบรอบ การส่งชุดเดิมอีกครั้งตอนนั้นเป็นการเบิกใหม่ที่ตั้งใจ ไม่ใช่การกดพลาด)
+const findRecentDuplicateRequest = (username, project, items, nowIso) => {
+  // requestDate เก็บเป็น ISO string ต้องเทียบเป็น string ด้วย
+  // ถ้าเอา Date object หรือ epoch ยัดเข้า SQLite จะไม่ match อะไรเลยแบบเงียบๆ แล้วด่านนี้จะไม่เคยทำงาน
+  const since = new Date(Date.parse(nowIso) - DUPLICATE_REQUEST_WINDOW_MS).toISOString();
+  const candidates = db.prepare(`
+    SELECT id, transactionId, requestDate
+    FROM wms_transactions
+    WHERE type = 'OUTBOUND'
+      AND (status = 'Pending' OR (status IN ('Approved', 'Partial') AND pickedUpAt IS NULL))
+      AND requesterUsername = ? AND project = ? AND requestDate >= ?
+    ORDER BY id DESC
+  `).all(username, project, since);
+  if (candidates.length === 0) return null;
+
+  const target = requestSignature(items.map((item) => ({ productId: item.productId, qty: item.quantity })));
+  const readItems = db.prepare('SELECT productId, requestedQty FROM wms_transaction_items WHERE tx_id = ?');
+  for (const tx of candidates) {
+    const rows = readItems.all(tx.id).map((row) => ({ productId: row.productId, qty: row.requestedQty }));
+    if (rows.length === items.length && requestSignature(rows) === target) return tx;
+  }
+  return null;
+};
+
 const getCurrentStock = (itemId) => {
   // item_id เป็น TEXT เสมอ แต่บาง record เก็บ productId มาเป็นตัวเลข (ตารางสคีมาเก่า)
   // ต้อง cast เป็น String ก่อน ไม่งั้น view จะเทียบคนละ storage class (เลข != ข้อความ) แล้วหาสต็อกไม่เจอ
@@ -203,6 +249,23 @@ export const createOutboundRequest = (req, res) => {
     });
 
     const requestDate = new Date().toISOString();
+
+    // กดปุ่มรัวตอนหน้าจอค้าง = ใบเดียวกันหลายใบ — ปัดตั้งแต่ใบที่สองเป็นต้นไป
+    // better-sqlite3 ทำงาน synchronous และ Node เป็น thread เดียว คำขอที่มาพร้อมกันจึงถูกจัดการเรียงทีละใบ
+    // ใบแรกบันทึกเสร็จก่อนใบที่สองจะเริ่มตรวจเสมอ ด่านนี้จึงไม่มีทางหลุดเพราะสองใบชนกันพอดี
+    const duplicate = findRecentDuplicateRequest(req.user.username, canonicalProject, normalizedItems, requestDate);
+    if (duplicate) {
+      // บอกทั้งรหัสใบเดิมและวินาทีที่ต้องรอ — ผู้ใช้จะได้ตามไปดูของจริงได้ และรู้ว่าต้องรอนานแค่ไหน
+      // ถ้าตั้งใจเบิกเพิ่มอีกใบจริง (ห้ามบอกแค่ว่า "ส่งอีกครั้งได้เลย" เพราะส่งทันทีก็โดนปัดซ้ำ)
+      const elapsedMs = Date.parse(requestDate) - Date.parse(duplicate.requestDate);
+      const whenText = elapsedMs < 1000 ? 'เมื่อครู่นี้' : `เมื่อ ${Math.round(elapsedMs / 1000)} วินาทีที่แล้ว`;
+      const waitSeconds = Math.max(1, Math.ceil((DUPLICATE_REQUEST_WINDOW_MS - elapsedMs) / 1000));
+      throw new ValidationError(
+        `คุณเพิ่งส่งใบเบิกรายการเดียวกันนี้ไป${whenText} (${duplicate.transactionId}) ` +
+        `— ระบบรับใบแรกไว้แล้ว ถ้าต้องการเบิกเพิ่มอีกใบ รออีก ${waitSeconds} วินาทีแล้วส่งใหม่ได้`
+      );
+    }
+
     const transactionId = nextTransactionId('REQ');
 
     db.transaction(() => {

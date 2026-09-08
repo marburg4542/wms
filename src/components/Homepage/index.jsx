@@ -46,6 +46,12 @@ export default function Homepage() {
   const [returnReason, setReturnReason] = useState('');
   const [returnBusy, setReturnBusy] = useState(false);
 
+  // กันกดปุ่มซ้ำระหว่างรอเซิร์ฟเวอร์ตอบ — จอที่ไม่ขยับทำให้คนกดรัวจนได้รายการซ้ำ (เหตุ 7 ก.ย. 2026)
+  // ปุ่มส่งมอบอยู่ในลิสต์จึงต้องจำเป็นราย "ใบ" ไม่ใช่ค่าเดียว ไม่งั้นกดใบหนึ่งแล้วใบอื่นกดไม่ได้ไปด้วย
+  const [approveBusy, setApproveBusy] = useState(false);
+  const [cancelBusy, setCancelBusy] = useState(false);
+  const [pickupBusy, setPickupBusy] = useState(() => new Set());
+
   useBodyScrollLock(!!approveModal || exportModalOpen || !!itemsModal || !!cancelResv || returnOpen); // freeze พื้นหลังตอนเปิด modal
 
   const offset = new Date().getTimezoneOffset() * 60000;
@@ -167,7 +173,7 @@ export default function Homepage() {
   };
 
   const handleApproveSubmit = async (action) => {
-    if (!approveModal) return;
+    if (!approveModal || approveBusy) return;
 
     // ปฏิเสธ หรืออนุมัติไม่ครบตามจำนวนที่ขอ ต้องบอกเหตุผลให้ผู้ขอเบิกเสมอ (server ตรวจซ้ำอีกชั้น)
     const message = approveMessage.trim();
@@ -175,6 +181,7 @@ export default function Homepage() {
     if (action === 'REJECT' && !message) return toast.error('กรุณาระบุเหตุผลการปฏิเสธใบเบิก');
     if (action === 'APPROVE' && isPartial && !message) return toast.error('กรุณาระบุเหตุผลเมื่ออนุมัติไม่ครบตามจำนวนที่ขอ');
 
+    setApproveBusy(true);
     try {
       const updatedItems = approveModal.parsedItems.map(item => ({
         productId: item.productId,
@@ -193,13 +200,18 @@ export default function Homepage() {
       }
     } catch {
       toast.error('เกิดข้อผิดพลาดในการประมวลผล');
+    } finally {
+      // ต้องปลดล็อกทุกทางออก ไม่ใช่เฉพาะตอนสำเร็จ ไม่งั้นพลาดครั้งเดียวปุ่มจะค้างจนกว่าจะรีโหลดหน้า
+      setApproveBusy(false);
     }
   };
 
   // ยกเลิกการจองใบที่อนุมัติแล้วแต่ไม่มีคนมารับ — คืนของเข้าสต็อก ต้องระบุเหตุผล
   const submitCancelReservation = async () => {
+    if (cancelBusy) return;
     const reason = cancelReason.trim();
     if (!reason) return toast.error('กรุณาระบุเหตุผลการยกเลิกการจอง');
+    setCancelBusy(true);
     try {
       const res = await fetchApi(`/api/transactions/${cancelResv.id}/cancel-reservation`, {
         method: 'PUT',
@@ -213,6 +225,8 @@ export default function Homepage() {
       }
     } catch (err) {
       toast.error(err?.message || 'ยกเลิกการจองไม่สำเร็จ');
+    } finally {
+      setCancelBusy(false);
     }
   };
 
@@ -273,6 +287,7 @@ export default function Homepage() {
   };
 
   const handlePickup = async (tx) => {
+    if (pickupBusy.has(tx.id)) return;
     const ok = await confirmDialog({
       title: 'ยืนยันการส่งมอบสินค้า',
       message: `ส่งมอบสินค้าตามใบเบิก ${tx.transactionId || tx.id} ให้ผู้ขอเบิกแล้ว?
@@ -280,6 +295,7 @@ export default function Homepage() {
       confirmText: 'ส่งมอบแล้ว'
     });
     if (!ok) return;
+    setPickupBusy((prev) => new Set(prev).add(tx.id));
     try {
       const res = await fetchApi(`/api/transactions/${tx.id}/pickup`, { method: 'PUT' });
       if (res.success) {
@@ -288,6 +304,13 @@ export default function Homepage() {
       }
     } catch (err) {
       console.error('Pickup failed:', err);
+    } finally {
+      // ต้องปลดล็อกทุกทางออก ไม่ใช่เฉพาะตอนสำเร็จ ไม่งั้นพลาดครั้งเดียวปุ่มใบนั้นจะค้างจนกว่าจะรีโหลดหน้า
+      setPickupBusy((prev) => {
+        const next = new Set(prev);
+        next.delete(tx.id);
+        return next;
+      });
     }
   };
 
@@ -403,7 +426,11 @@ export default function Homepage() {
                       ) : (
                         isAdmin
                           ? <div className="flex gap-1">
-                              <button onClick={() => handlePickup(tx)} className="btn btn-xs btn-success text-white shadow-sm">รับแล้ว</button>
+                              <button onClick={() => handlePickup(tx)} disabled={pickupBusy.has(tx.id)}
+                                className="btn btn-xs btn-success text-white shadow-sm gap-1">
+                                {pickupBusy.has(tx.id) && <span className="loading loading-spinner loading-xs" />}
+                                รับแล้ว
+                              </button>
                               <button onClick={() => { setCancelResv(tx); setCancelReason(''); }} className="btn btn-xs btn-ghost text-error" title="ยกเลิกการจองและคืนของเข้าสต็อก">ยกเลิกจอง</button>
                             </div>
                           : <span className="badge badge-xs badge-success badge-outline">มารับสินค้าได้</span>
@@ -523,8 +550,14 @@ export default function Homepage() {
             </div>
             <div className="flex justify-end gap-3 pt-4 border-t border-base-200">
               <button className="btn btn-ghost" onClick={() => setApproveModal(null)}>ยกเลิก</button>
-              <button className="btn btn-error text-white" onClick={() => handleApproveSubmit('REJECT')}>ปฏิเสธทั้งใบ</button>
-              <button className="btn btn-success text-white" onClick={() => handleApproveSubmit('APPROVE')}>บันทึกการอนุมัติ</button>
+              <button className="btn btn-error text-white gap-1" disabled={approveBusy} onClick={() => handleApproveSubmit('REJECT')}>
+                {approveBusy && <span className="loading loading-spinner loading-xs" />}
+                ปฏิเสธทั้งใบ
+              </button>
+              <button className="btn btn-success text-white gap-1" disabled={approveBusy} onClick={() => handleApproveSubmit('APPROVE')}>
+                {approveBusy && <span className="loading loading-spinner loading-xs" />}
+                บันทึกการอนุมัติ
+              </button>
             </div>
           </div>
         </div>
@@ -609,7 +642,10 @@ export default function Homepage() {
             </label>
             <div className="flex justify-end gap-2">
               <button className="btn btn-ghost" onClick={() => setCancelResv(null)}>ปิด</button>
-              <button className="btn btn-error text-white" disabled={!cancelReason.trim()} onClick={submitCancelReservation}>ยกเลิกการจอง</button>
+              <button className="btn btn-error text-white gap-1" disabled={cancelBusy || !cancelReason.trim()} onClick={submitCancelReservation}>
+                {cancelBusy && <span className="loading loading-spinner loading-xs" />}
+                ยกเลิกการจอง
+              </button>
             </div>
           </div>
         </div>
