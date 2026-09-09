@@ -7,8 +7,14 @@ REM  Registers a Windows task that starts WMS at boot as the SYSTEM account,
 REM  so the system comes back after a reboot WITHOUT anyone logging in.
 REM  A task tied to a person's account leaves the office offline until that
 REM  person shows up - the exact problem this machine is meant to solve.
+REM
+REM  This does NOT touch the Cloudflare tunnel. That is installed separately
+REM  as its own Windows service and starts itself. See README.md.
+REM
+REM  APP_PORT must match PORT in server\.env
 REM ============================================================================
 setlocal
+set "APP_PORT=5000"
 
 net session >nul 2>&1
 if errorlevel 1 (
@@ -31,6 +37,14 @@ if not exist "%RUNNER%" (
   pause
   exit /b 1
 )
+if not exist "%ROOT%\server\.env" (
+  echo.
+  echo   WARNING: server\.env is missing - the server will not start without it.
+  echo   Put the data files in place first, then run this again.
+  echo.
+  pause
+  exit /b 1
+)
 
 echo.
 echo   Project folder : %ROOT%
@@ -48,14 +62,16 @@ if errorlevel 1 (
 echo.
 echo   Starting it now, no reboot needed...
 schtasks /run /tn "WMS" >nul
-timeout /t 10 /nobreak >nul
 
-netstat -ano | findstr ":5000" | findstr LISTENING >nul
+REM ping, not timeout: works with or without a console. See run-wms.bat.
+ping -n 13 127.0.0.1 >nul 2>&1
+
+netstat -ano | findstr /C:":%APP_PORT% " | findstr LISTENING >nul
 if errorlevel 1 (
-  echo   [!] Nothing listening on port 5000 yet.
+  echo   [!] Nothing listening on port %APP_PORT% yet.
   echo       Open %ROOT%\wms.log to see what went wrong.
 ) else (
-  echo   [OK] WMS is running - test it at http://localhost:5000
+  echo   [OK] WMS is running - test it at http://localhost:%APP_PORT%
 )
 
 echo.

@@ -5,8 +5,11 @@ REM  See README.md in this folder for the Thai explanation.
 REM
 REM  Normally unnecessary: Windows starts it at every boot already.
 REM  This is for getting back up after stop-wms.bat without rebooting.
+REM
+REM  APP_PORT must match PORT in server\.env
 REM ============================================================================
 setlocal
+set "APP_PORT=5000"
 
 net session >nul 2>&1
 if errorlevel 1 (
@@ -31,10 +34,11 @@ if errorlevel 1 (
   exit /b 1
 )
 
-timeout /t 10 /nobreak >nul
-netstat -ano | findstr ":5000" | findstr LISTENING >nul
+REM ping, not timeout: works with or without a console. See run-wms.bat.
+ping -n 11 127.0.0.1 >nul 2>&1
+netstat -ano | findstr /C:":%APP_PORT% " | findstr LISTENING >nul
 if errorlevel 1 (
-  echo   [!] Nothing listening on port 5000 yet.
+  echo   [!] Nothing listening on port %APP_PORT% yet.
   echo       Open %ROOT%\wms.log to see what went wrong.
 ) else (
   echo   [OK] WMS is running - staff can use it again.
