@@ -27,6 +27,10 @@ set "NODE=node"
 where node >nul 2>&1 || set "NODE=C:\Program Files\nodejs\node.exe"
 
 :loop
+REM Trim the log once it passes ~10 MB, keeping one previous generation.
+REM Nothing else ever deletes this file, and a crash loop can fill it fast.
+if exist "%LOG%" for %%F in ("%LOG%") do if %%~zF GTR 10485760 move /y "%LOG%" "%LOG%.old" >nul 2>&1
+
 echo.>> "%LOG%"
 echo [%date% %time%] WMS starting >> "%LOG%"
 cd /d "%ROOT%\server"
