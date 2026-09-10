@@ -1,12 +1,160 @@
-# React + Vite
+# WMS — ระบบจัดการคลังสินค้า
 
-This template provides a minimal setup to get React working in Vite with HMR and some ESLint rules.
+ระบบจัดการคลังสินค้าภายในองค์กร ใช้งานผ่านเว็บ และติดตั้งเป็นแอปบนมือถือได้
 
-Currently, two official plugins are available:
+---
 
-- [@vitejs/plugin-react](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react) uses [Babel](https://babeljs.io/) for Fast Refresh
-- [@vitejs/plugin-react-swc](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react-swc) uses [SWC](https://swc.rs/) for Fast Refresh
+## ระบบทำอะไรได้
 
-## Expanding the ESLint configuration
+- **เบิกของ** — พนักงานยื่นเรื่อง → ผู้อนุมัติตรวจ → ผู้เบิกมารับ → **ตอนมารับนั่นแหละสต็อกถึงตัด**
+- **ผังคลัง 2 มิติ** — วาดห้อง ชั้นวาง และพื้นที่วางพื้น แล้วปักว่าสินค้าแต่ละรายการวางอยู่ตรงไหนบ้าง หนึ่งรายการวางได้หลายที่
+- **รับเข้า · คืนของ · ปรับยอด** พร้อมประวัติย้อนหลังทุกรายการ
+- **สแกน QR และบาร์โค้ด** จากกล้องมือถือ
+- **แจ้งเตือน** เด้งบนมือถือแม้ปิดแอปอยู่
+- **รายงาน PDF** สร้างจากฝั่งเซิร์ฟเวอร์ จึงดาวน์โหลดบน iOS ได้
 
-If you are developing a production application, we recommend using TypeScript with type-aware lint rules enabled. Check out the [TS template](https://github.com/vitejs/vite/tree/main/packages/create-vite/template-react-ts) for information on how to integrate TypeScript and [`typescript-eslint`](https://typescript-eslint.io) in your project.
+---
+
+## สิ่งที่ใช้สร้าง
+
+| ส่วน | ใช้อะไร |
+|---|---|
+| หน้าเว็บ | React 19 · Vite 6 · Tailwind 4 · DaisyUI 5 · React Router 7 |
+| เซิร์ฟเวอร์ | Express 4 · better-sqlite3 12 |
+| ฐานข้อมูล | SQLite ไฟล์เดียว ไม่ต้องติดตั้งโปรแกรมฐานข้อมูลแยก |
+| ทั้งโปรเจกต์ | ESM ล้วน — ไฟล์ที่ต้องใช้ `module.exports` ต้องตั้งนามสกุล `.cjs` |
+
+ตอนใช้งานจริง Express เสิร์ฟทั้งหน้าเว็บ `/api` และ `/uploads` จากพอร์ตเดียว จึงมี URL เดียว
+
+---
+
+## เริ่มพัฒนา
+
+ต้องมี **Node.js 24**
+
+```bash
+npm ci
+cd server && npm ci
+```
+
+คัดลอกไฟล์ตัวอย่างการตั้งค่าแล้วกรอกค่า
+
+```bash
+cp server/.env.example server/.env
+cp src/.env.example src/.env
+```
+
+`server/.env` ต้องมีอย่างน้อย `JWT_SECRET` ยาว 32 ตัวขึ้นไป ไม่งั้นเซิร์ฟเวอร์จะไม่ยอมสตาร์ต
+
+```bash
+npm run dev:all
+```
+
+เปิดหน้าเว็บที่ `localhost:5173` ส่วนเซิร์ฟเวอร์อยู่ที่ `localhost:5000` (Vite ส่งต่อ `/api` กับ `/uploads` ให้เอง)
+
+---
+
+## กติกาที่ต้องรู้ก่อนแก้โค้ด
+
+สี่ข้อนี้ถ้าพลาดแล้วบัญชีสต็อกเพี้ยนโดยไม่มีอะไรเตือน
+
+### 1. ยอดสต็อกจริงมาจากที่เดียวเท่านั้น
+
+```
+ยอดคงเหลือ  =  ของที่รับเข้า  −  ของที่เบิกออก
+```
+
+ตาราง `item_locations` เป็นแค่ **"การกระจายของ"** ว่ายอดนั้นวางอยู่ที่ไหนบ้าง ผลรวมของทุกตำแหน่งจึง**ห้ามเกินยอดคงเหลือ** ส่วนต่างคือของที่ยังไม่ได้ระบุตำแหน่ง
+
+คอลัมน์ตำแหน่งบนตาราง `items` เป็นแค่สำเนาไว้ให้หน้าจอเดิมอ่าน **ห้ามเขียนตรงๆ** ต้องผ่าน `syncPrimaryLocation()` ใน `server/utils/itemLocations.js` จุดเดียว
+
+### 2. สต็อกตัดตอน "มารับของ" ไม่ใช่ตอน "อนุมัติ"
+
+อนุมัติแล้วแต่ยังไม่มารับ = ของยังอยู่ในคลังจริง แต่ถูกจองไว้แล้ว คนอื่นเบิกซ้ำไม่ได้
+
+### 3. โครงสร้างฐานข้อมูลอัปเกรดตัวเองตอนบูต — ไม่มีโฟลเดอร์ migrations
+
+จะเพิ่มคอลัมน์ใหม่ ให้**เขียนต่อท้ายใน `server/db.js` ตามแพตเทิร์นเดิม** ห้ามสร้างไฟล์ migration แยก
+
+### 4. สิทธิ์ผู้ใช้ต้องแก้สองที่พร้อมกัน
+
+มี 4 ระดับ: `Admin` · `Manager` · `Operator` · `Viewer`
+
+| ชั้น | ไฟล์ |
+|---|---|
+| เซิร์ฟเวอร์ | `server/routes/*.js` |
+| หน้าเว็บ | `src/App.jsx` |
+
+แก้ที่เดียวไม่พอ — ฝั่งหน้าเว็บเป็นแค่การซ่อนเมนู ไม่ได้กันจริง
+
+---
+
+## ตรวจก่อนส่งงาน
+
+```bash
+cd server && npm run audit    # ตรวจกติกาของข้อมูล + ความสมบูรณ์ของไฟล์ฐานข้อมูล
+cd server && npm test         # ยิงเซิร์ฟเวอร์จริงผ่านฐานข้อมูลชั่วคราว
+npm test                      # เทสต์ส่วนผังคลัง
+npm run lint
+```
+
+เทสต์ทุกชุดสร้างฐานข้อมูลชั่วคราวขึ้นมาเอง **ไม่มีทางแตะฐานข้อมูลจริง**
+
+⚠️ `npm run audit` ไม่ได้อ่านค่าจากไฟล์ตั้งค่า ถ้าจะตรวจฐานข้อมูลตัวอื่นต้องส่ง path เข้าไปเอง
+
+```bash
+cd server && npm run audit -- backups/2026-09-11T09-20-15/identifier.sqlite
+```
+
+---
+
+## แผนที่โค้ด
+
+```
+server/
+  db.js                       โครงสร้างฐานข้อมูลทั้งหมด — เริ่มอ่านที่นี่เวลาไม่รู้ว่าอะไรอยู่ไหน
+  routes/ → controllers/ → utils/
+  utils/itemLocations.js      หัวใจของกติกา "ยอดวาง ≤ ยอดคงเหลือ"
+  utils/storageWorkflow.js    เวิร์กโฟลว์หยิบของและย้ายของ
+  test/helpers/invariants.js  กติกาของข้อมูล ใช้ร่วมกันทั้งเทสต์และคำสั่งตรวจ
+  tools/                      สำรองข้อมูล · ตรวจข้อมูล · ซ่อมตำแหน่ง · นำเข้าแคตตาล็อก
+
+src/components/
+  Storage/          ผังคลัง (ไฟล์ใหญ่สุดในระบบ แก้ด้วยความระวัง)
+  Products/         จัดการสินค้า
+  Inventory/        เบิก รับ และประวัติ
+
+windows/            สคริปต์สำหรับเครื่องที่รันระบบจริง
+```
+
+---
+
+## เอกสารอื่น
+
+| อ่านเมื่อ | ไฟล์ |
+|---|---|
+| ต้องดูแลเครื่องที่รันระบบจริง | [`windows/README.md`](windows/README.md) |
+| ติดตั้งระบบบนเครื่องใหม่ตั้งแต่ต้น | [`docs/CLOUDFLARE_SETUP.md`](docs/CLOUDFLARE_SETUP.md) |
+| ย้ายระบบที่ใช้อยู่ไปเครื่องอื่น | [`docs/MIGRATION.md`](docs/MIGRATION.md) |
+| สอนผู้ใช้ทั่วไปใช้ระบบ | [`docs/USER_GUIDE.md`](docs/USER_GUIDE.md) |
+
+---
+
+## สิ่งที่ไม่อยู่ใน git
+
+ไฟล์พวกนี้ถูกกันไว้เพราะมีข้อมูลจริงและความลับอยู่ข้างใน ต้องส่งต่อกันแยกเสมอ
+
+| ไฟล์ | ถ้าไม่มีจะเป็นยังไง |
+|---|---|
+| `server/identifier.sqlite` | ไม่มีข้อมูลอะไรเลย ระบบสร้างฐานเปล่าใหม่ให้ |
+| `server/uploads/` | รูปสินค้าหายหมด ข้อมูลอื่นยังอยู่ |
+| `server/.env` | **เซิร์ฟเวอร์สตาร์ตไม่ขึ้น** |
+| `src/.env` | คนลืมบ่อย |
+
+**ห้ามคัดลอกไฟล์ฐานข้อมูลตรงๆ ขณะระบบรันอยู่** ให้ใช้คำสั่งสำรองข้อมูลเสมอ — ข้อมูลล่าสุดบางส่วนยังอยู่ในไฟล์พ่วง ถ้าคัดลอกแค่ไฟล์หลักจะได้ข้อมูลเก่ากว่าความจริงโดยไม่มีอะไรเตือน
+
+```bash
+cd server && npm run backup
+```
+
+**ห้ามคัดลอกโฟลเดอร์ `node_modules` ข้ามเครื่อง** — มีส่วนที่คอมไพล์ผูกกับเครื่องและเวอร์ชัน Node ให้ `npm ci` ใหม่เสมอ
