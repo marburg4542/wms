@@ -50,7 +50,15 @@ if errorlevel 1 (
   echo     Service "cloudflared" not found - the site is unreachable from
   echo     outside even if the server above is UP.
 ) else (
-  for /f "tokens=3" %%S in ('sc query cloudflared ^| findstr /C:"STATE"') do echo     Service state: %%S
+  REM Read the word, not the number: "STATE : 4  RUNNING" splits so that the
+  REM third token is the code 4, which tells a human nothing.
+  sc query cloudflared | findstr /C:"RUNNING" >nul
+  if errorlevel 1 (
+    echo     Service exists but is NOT running - the site is unreachable
+    echo     from outside. Start it from Services, or reinstall the tunnel.
+  ) else (
+    echo     Running - the site is reachable from outside.
+  )
 )
 echo.
 
@@ -63,7 +71,9 @@ powershell -NoProfile -Command "$d = $env:BACKUP_DEST; if (-not (Test-Path $d)) 
 echo.
 
 echo [6] Last 15 lines of wms.log
-powershell -NoProfile -Command "if (Test-Path $env:LOG) { Get-Content $env:LOG -Tail 15 | ForEach-Object { '     ' + $_ } } else { '     No log file yet.' }"
+REM -Encoding UTF8: node writes its startup lines as UTF-8, and without this
+REM they come back as garbled characters that look like an error but are not.
+powershell -NoProfile -Command "if (Test-Path $env:LOG) { Get-Content $env:LOG -Tail 15 -Encoding UTF8 | ForEach-Object { '     ' + $_ } } else { '     No log file yet.' }"
 echo.
 
 echo ============================================================
