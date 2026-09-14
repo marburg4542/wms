@@ -101,13 +101,17 @@ export default function Navbar() {
         } else {
           const resolvedTx = dataTx.transactions.filter(t => t.requesterUsername === currentUser.username && t.status !== 'Pending');
           const resNotifs = resolvedTx.map(t => {
-            const statusText = t.status === 'Approved' ? '✅ อนุมัติ' : t.status === 'Partial' ? '⚠️ อนุมัติบางส่วน' : '❌ ปฏิเสธ';
+            const statusText = t.status === 'Approved' ? '✅ อนุมัติ'
+              : t.status === 'Partial' ? '⚠️ อนุมัติบางส่วน'
+              : t.status === 'Cancelled' ? '🚫 ยกเลิก' : '❌ ปฏิเสธ';
             // อนุมัติแล้วแต่ยังไม่กด Picked up = ของพร้อมแล้ว รอผู้ขอมารับ
             const pickupHint = ['Approved', 'Partial'].includes(t.status) && !t.pickedUpAt ? ' — มารับสินค้าได้เลย' : '';
             // แนบหมายเหตุจาก admin ไปด้วย เผื่อมีเงื่อนไข เช่น นัดเวลารับของ หรือเหตุผลที่จ่ายไม่ครบ
             const adminNote = t.adminMessage ? ` (หมายเหตุ: ${t.adminMessage})` : '';
+            // ใบที่ถูกยกเลิกการจองเคยเป็นแจ้งเตือน "อนุมัติ" ที่ผู้ใช้อ่านไปแล้ว ถ้าใช้ id เดิม
+            // จะค้างสถานะอ่านแล้วและไม่มีเสียงเตือน — จึงแยก id ให้เป็นแจ้งเตือนใหม่
             return {
-              id: `tx-res-${t.id}`, text: `✉️ ผลขอเบิก ${t.transactionId || 'ของคุณ'}: ${statusText}${pickupHint}${adminNote}`, isRead: false, type: t.status === 'Approved' ? 'info' : 'error', link: '/homepage'
+              id: `tx-res-${t.id}${t.status === 'Cancelled' ? '-cancelled' : ''}`, text: `✉️ ผลขอเบิก ${t.transactionId || 'ของคุณ'}: ${statusText}${pickupHint}${adminNote}`, isRead: false, type: t.status === 'Approved' ? 'info' : 'error', link: '/homepage'
             };
           });
           newNotifs = [...newNotifs, ...resNotifs];
