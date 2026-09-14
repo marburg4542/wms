@@ -398,16 +398,21 @@ export default function Homepage() {
         <div className="card glass-panel p-5">
           <h2 className="text-lg font-bold mb-4 flex items-center gap-2"><span>📋</span> คำขอเบิกรอดำเนินการ / รอส่งมอบ</h2>
           <div className="overflow-x-auto max-h-100 overflow-y-auto">
-            <table className="table table-sm w-full">
+            <table className="table table-sm w-full max-sm:[&_td]:px-1.5 max-sm:[&_th]:px-1.5">
               <thead className="sticky top-0 bg-base-100/80 backdrop-blur-md z-10">
-                <tr><th>รหัสใบเบิก</th><th>ผู้ขอ</th><th>โปรเจกต์</th><th>รายการ</th><th>สถานะ</th><th>จัดการ</th></tr>
+                {/* จอมือถือ (ต่ำกว่า 640px) ปรับให้สถานะกับปุ่มจัดการอยู่ในจอโดยไม่ต้องปัดข้าง:
+                    ซ่อนรหัสใบเบิกกับโปรเจกต์ · ซ้อนปุ่มจัดการเป็นแนวตั้ง · ลดระยะขอบเซลล์
+                    ข้อมูลที่ซ่อนไม่หาย — หน้าต่าง "n รายการ" แสดงรหัสใบ โปรเจกต์ และผู้ขอไว้ที่หัวครบ
+                    คงชื่อผู้ขอไว้เพราะเป็นตัวเดียวที่ทำให้แยกแต่ละแถวออก ถ้าซ่อนด้วยทุกแถวจะหน้าตาเหมือนกัน
+                    วัดแล้วพอดีทั้งจอ iPhone 375px และ Android 360px — ถ้าชื่อผู้ใช้ยาวมากอาจยังต้องปัดข้างเล็กน้อย */}
+                <tr><th className="hidden sm:table-cell">รหัสใบเบิก</th><th>ผู้ขอ</th><th className="hidden sm:table-cell">โปรเจกต์</th><th>รายการ</th><th>สถานะ</th><th>จัดการ</th></tr>
               </thead>
               <tbody>
                 {pendingRequests.length === 0 ? <tr><td colSpan="6" className="text-center opacity-50 py-4">ไม่มีคำขอใหม่</td></tr> : pendingRequests.map((tx) => (
                   <tr key={tx.id} className="hover:bg-base-200/40">
-                    <td className="text-xs font-mono">{tx.transactionId || tx.id}</td>
+                    <td className="hidden sm:table-cell text-xs font-mono">{tx.transactionId || tx.id}</td>
                     <td className="text-xs">{tx.requesterUsername}</td>
-                    <td className="text-xs max-w-25 truncate">{tx.project}</td>
+                    <td className="hidden sm:table-cell text-xs max-w-25 truncate">{tx.project}</td>
                     <td>
                       <button onClick={() => setItemsModal(tx)} className="btn btn-ghost btn-xs text-primary gap-1" title="คลิกดูรายการอะไหล่ (recheck ก่อนส่งมอบ)">
                         {getItemsToRender(tx).length} รายการ
@@ -425,7 +430,7 @@ export default function Homepage() {
                           : <span className="text-xs opacity-50">-</span>
                       ) : (
                         isAdmin
-                          ? <div className="flex gap-1">
+                          ? <div className="flex flex-col items-start gap-1 sm:flex-row">
                               <button onClick={() => handlePickup(tx)} disabled={pickupBusy.has(tx.id)}
                                 className="btn btn-xs btn-success text-white shadow-sm gap-1">
                                 {pickupBusy.has(tx.id) && <span className="loading loading-spinner loading-xs" />}
