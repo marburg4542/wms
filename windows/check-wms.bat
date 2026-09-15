@@ -11,7 +11,7 @@ REM ============================================================================
 setlocal
 set "APP_PORT=5000"
 set "BACKUP_DEST=G:\wms-backups"
-set "SECRETS_DEST=D:\wms-secrets"
+set "SECRETS_DEST=G:\wms-secrets"
 
 pushd "%~dp0.."
 set "ROOT=%CD%"

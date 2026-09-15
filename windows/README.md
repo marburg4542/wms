@@ -76,7 +76,7 @@
 
 **กดเมื่อไหร่:** ก่อนจะทำอะไรที่เสี่ยง หรืออยากได้สำเนาสดๆ ไปเก็บ
 
-**ทำอะไร:** เก็บฐานข้อมูลของวันนี้ไว้ที่ `G:\wms-backups` และเติมรูปที่เพิ่งอัปโหลดเข้าไปในกองรูป พร้อมเก็บสำเนาไฟล์ตั้งค่าไว้ที่ `D:\wms-secrets`
+**ทำอะไร:** เก็บฐานข้อมูลของวันนี้ไว้ที่ `G:\wms-backups` และเติมรูปที่เพิ่งอัปโหลดเข้าไปในกองรูป พร้อมเก็บสำเนาไฟล์ตั้งค่าไว้ที่ `G:\wms-secrets`
 
 ```
 G:\wms-backups\
@@ -160,7 +160,7 @@ G:\wms-backups\
      Database : identifier-2026-09-15.sqlite   7 hours ago
      History  : 92 daily copies, 74 MB
      Images   : 247 files, 231 MB
-     Settings : .env copy present in D:\wms-secrets
+     Settings : .env copy present in G:\wms-secrets
 
 [6] Last 15 lines of wms.log
      [Fri 09/11/2026  8:02:11.03] WMS starting
@@ -196,7 +196,7 @@ G:\wms-backups\
      History  : 79 daily copies, 63 MB
      [!] More than 2 days old - the backup task is not running.
      Images   : 247 files, 231 MB
-     Settings : .env copy present in D:\wms-secrets
+     Settings : .env copy present in G:\wms-secrets
 
 [6] Last 15 lines of wms.log
      [Fri 09/11/2026  2:14:07.55] WMS starting
@@ -226,7 +226,7 @@ G:\wms-backups\
    ฐานข้อมูล : G:\wms-backups\database\2026\09\identifier-2026-09-15.sqlite  (0.82 MB)
    รูปภาพ    : G:\wms-backups\uploads  (ทั้งหมด 247 ไฟล์, เพิ่มรอบนี้ 3)
    เก็บย้อนหลัง 365 วัน — ตอนนี้มี 92 วัน
-  Copied server\.env to D:\wms-secrets
+  Copied server\.env to G:\wms-secrets
 
   [OK] Done. Daily database copies are kept for 365 days.
 ```
@@ -365,7 +365,7 @@ vite v6.3.5 building for production...
 | ค่า | อยู่ในไฟล์ | ตอนนี้เป็น | แก้เมื่อไหร่ |
 |---|---|---|---|
 | `BACKUP_DEST` | `backup-now.bat` · `check-wms.bat` | `G:\wms-backups` | เปลี่ยนไดรฟ์เก็บสำรอง |
-| `SECRETS_DEST` | `backup-now.bat` · `check-wms.bat` | `D:\wms-secrets` | เปลี่ยนที่เก็บสำเนาไฟล์ตั้งค่า |
+| `SECRETS_DEST` | `backup-now.bat` · `check-wms.bat` | `G:\wms-secrets` | เปลี่ยนที่เก็บสำเนาไฟล์ตั้งค่า |
 | `KEEP_DAYS` | `backup-now.bat` | `365` วัน | อยากเก็บฐานข้อมูลย้อนหลังนานขึ้นหรือสั้นลง |
 | `APP_PORT` | อีก 5 ไฟล์ ที่ไม่ใช่ `backup-now` · `run-wms` | `5000` | เปลี่ยนพอร์ตของระบบ |
 | `ATTIME` | `install-backup-task.bat` | `02:00` | เปลี่ยนเวลาสำรองรายวัน |
@@ -376,7 +376,7 @@ vite v6.3.5 building for production...
 
 **พื้นที่ที่ต้องเผื่อในไดรฟ์ปลายทาง** — ฐานข้อมูลวันละ ~0.8 MB (1 ปี ≈ 300 MB) บวกกองรูปอีกก้อนเดียวที่ตอนนี้ ~230 MB และโตขึ้นเดือนละ ~20 MB รวมแล้วปีแรกไม่ถึง 1 GB
 
-**`SECRETS_DEST` ตั้งใจให้อยู่คนละไดรฟ์กับตัวสำรอง** เพราะไดรฟ์สำรองถูกซิงค์ขึ้น Google Drive ส่วนไฟล์ตั้งค่ามีกุญแจของระบบอยู่ข้างใน จึงต้องอยู่ที่ที่ไม่มีโปรแกรมซิงค์คลาวด์มองเห็น
+**`SECRETS_DEST` ต้องเป็นคนละโฟลเดอร์กับ `BACKUP_DEST` เสมอ ห้ามเอาไปไว้ข้างใน** ไฟล์ตั้งค่ามีกุญแจที่ใช้เข้าระบบแทนใครก็ได้อยู่ข้างใน และ Google Drive แชร์กันเป็นโฟลเดอร์ — วันที่มีคนขอไฟล์สำรองไปตรวจแล้วคุณกดแชร์โฟลเดอร์ `wms-backups` การแยกไว้ตั้งแต่แรกคือสิ่งเดียวที่กันไม่ให้กุญแจติดไปด้วย
 
 ---
 

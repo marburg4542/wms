@@ -11,13 +11,16 @@ REM  ---- EDIT THESE THREE LINES IF THE DRIVES CHANGE ----
 REM  BACKUP_DEST must be on a DIFFERENT physical drive than the app, so one
 REM  dead disk cannot take the live data and every backup with it.
 REM
-REM  SECRETS_DEST is deliberately NOT on the backup drive. That drive is synced
-REM  to Google Drive, and .env holds the token signing secret, the push private
-REM  key and the mail password. Keep it where no cloud client is watching.
+REM  SECRETS_DEST must stay a SEPARATE folder, never a subfolder of
+REM  BACKUP_DEST. .env holds the token signing secret, the push private key and
+REM  the mail password, so whoever reads it can sign in as anyone. Both folders
+REM  sync to the company Google Drive, and sharing there is done per folder:
+REM  keeping them apart means handing someone the backups can never hand them
+REM  the keys as well.
 REM ============================================================================
 setlocal
 set "BACKUP_DEST=G:\wms-backups"
-set "SECRETS_DEST=D:\wms-secrets"
+set "SECRETS_DEST=G:\wms-secrets"
 set "KEEP_DAYS=365"
 REM ---------------------------------------------------------------------------
 
