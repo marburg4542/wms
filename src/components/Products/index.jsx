@@ -59,6 +59,7 @@ export default function Products() {
   // มุมมอง "ที่ปิดใช้งาน" — แสดงเฉพาะสินค้าที่ถูก archive ไว้ สำหรับคืนสถานะหรือลบถาวร
   const [showInactive, setShowInactive] = useState(false);
   const [discrepancyOnly, setDiscrepancyOnly] = useState(false); // แสดงเฉพาะสินค้ายอดคลาดเคลื่อน (ติดลบ)
+  const [newTodayOnly, setNewTodayOnly] = useState(false);       // แสดงเฉพาะสินค้าที่เพิ่มวันนี้ (ไว้ตรวจข้อมูลประจำวัน)
   const [scanOpen, setScanOpen] = useState(false);
   const searchInputRef = useRef(null);
 
@@ -115,6 +116,7 @@ export default function Products() {
       if (showInactive) query.set('onlyInactive', 'true'); // มุมมองที่ปิดใช้งาน = แสดงเฉพาะสินค้าที่ archive ไว้
       if (lowStockOnly) query.set('lowStock', 'true');
       if (discrepancyOnly) query.set('discrepancy', 'true');
+      if (newTodayOnly) query.set('newToday', 'true');
       const json = await fetchApi(`/api/products?${query.toString()}`);
       // ถ้ามีคำขอใหม่กว่ายิงตามมาแล้ว ให้ทิ้ง response เก่านี้ ไม่เอามาอัปเดตจอ
       if (reqId !== reqIdRef.current) return;
@@ -128,10 +130,10 @@ export default function Products() {
     } finally {
       if (reqId === reqIdRef.current && !silent) setLoading(false);
     }
-  }, [searchTerm, groupFilter, showInactive, lowStockOnly, discrepancyOnly, page]);
+  }, [searchTerm, groupFilter, showInactive, lowStockOnly, discrepancyOnly, newTodayOnly, page]);
 
   // เปลี่ยนตัวกรอง → กลับไปหน้า 1 เสมอ
-  useEffect(() => { setPage(1); }, [searchTerm, groupFilter, showInactive, lowStockOnly, discrepancyOnly]);
+  useEffect(() => { setPage(1); }, [searchTerm, groupFilter, showInactive, lowStockOnly, discrepancyOnly, newTodayOnly]);
 
   useEffect(() => {
     fetchApi('/api/product-groups')
@@ -490,7 +492,7 @@ export default function Products() {
     }
   };
 
-  // ตัวกรองมุมมอง 3 อัน (สต็อกต่ำ / คลาดเคลื่อน / ที่ปิดใช้งาน) เปิดได้ทีละ 1 อันเท่านั้น — เปิดอันใหม่ปิดที่เหลืออัตโนมัติ
+  // ตัวกรองมุมมอง 4 อัน (สต็อกต่ำ / คลาดเคลื่อน / ที่ปิดใช้งาน / รายการใหม่) เปิดได้ทีละ 1 อันเท่านั้น — เปิดอันใหม่ปิดที่เหลืออัตโนมัติ
   const clearLowStock = () => {
     if (!lowStockOnly) return;
     const params = new URLSearchParams(searchParams);
@@ -506,6 +508,7 @@ export default function Products() {
       next.set('filter', 'low');
       setDiscrepancyOnly(false);
       setShowInactive(false);
+      setNewTodayOnly(false);
     }
     setSearchParams(next, { replace: true });
   };
@@ -513,13 +516,19 @@ export default function Products() {
   const toggleDiscrepancy = () => {
     const next = !discrepancyOnly;
     setDiscrepancyOnly(next);
-    if (next) { clearLowStock(); setShowInactive(false); }
+    if (next) { clearLowStock(); setShowInactive(false); setNewTodayOnly(false); }
   };
 
   const toggleShowInactive = () => {
     const next = !showInactive;
     setShowInactive(next);
-    if (next) { clearLowStock(); setDiscrepancyOnly(false); }
+    if (next) { clearLowStock(); setDiscrepancyOnly(false); setNewTodayOnly(false); }
+  };
+
+  const toggleNewToday = () => {
+    const next = !newTodayOnly;
+    setNewTodayOnly(next);
+    if (next) { clearLowStock(); setDiscrepancyOnly(false); setShowInactive(false); }
   };
 
   // ค้นหา/กรองสถานะ/สต็อกต่ำ/แบ่งหน้า ทำที่ server แล้ว — แสดงตามที่ได้มาตรงๆ
@@ -541,7 +550,7 @@ export default function Products() {
         </div>
       </div>
 
-      <div className="glass-panel rounded-2xl p-4 flex flex-col sm:flex-row sm:items-center gap-3">
+      <div className="glass-panel rounded-2xl p-4 flex flex-col sm:flex-row sm:flex-wrap sm:items-center gap-3">
         <div className="flex gap-2 w-full sm:max-w-xs">
           <input
             ref={searchInputRef}
@@ -572,11 +581,18 @@ export default function Products() {
           <input type="checkbox" className="toggle toggle-sm" checked={showInactive} onChange={toggleShowInactive} />
           <span className="label-text text-sm font-medium">ที่ปิดใช้งาน</span>
         </label>
+        <label className="label cursor-pointer gap-2 py-0" title="สินค้าที่เพิ่มเข้าระบบวันนี้ ตัวล่าสุดขึ้นก่อน">
+          <input type="checkbox" className="toggle toggle-sm toggle-info" checked={newTodayOnly} onChange={toggleNewToday} />
+          <span className="label-text text-sm font-medium">รายการใหม่</span>
+        </label>
         {lowStockOnly && (
           <span className="badge badge-error badge-outline gap-1">สต็อกต่ำ ({totalItems.toLocaleString()} รายการ)</span>
         )}
         {discrepancyOnly && (
           <span className="badge badge-warning badge-outline gap-1">ติดลบ {totalItems.toLocaleString()} รายการ</span>
+        )}
+        {newTodayOnly && (
+          <span className="badge badge-info badge-outline gap-1">เพิ่มวันนี้ {totalItems.toLocaleString()} รายการ</span>
         )}
       </div>
 

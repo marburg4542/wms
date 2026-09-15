@@ -3,6 +3,8 @@ import { retargetSku } from '../utils/skuRetarget.js';
 import { LocationError, setLocationQuantity } from '../utils/itemLocations.js';
 import { broadcast } from '../events.js';
 import { availableForProject, readItemStockContext } from '../utils/projectStock.js';
+import { INITIAL_STOCK_NOTE, recordInitialStockHistory } from '../utils/initialStockHistory.js';
+import { nextTransactionId } from '../utils/transactionId.js';
 
 const normalizeSku = (value) => String(value || '').trim().toUpperCase();
 const toNonNegativeInteger = (value, fallback = 0) => {
@@ -71,6 +73,7 @@ export const getProducts = (req, res) => {
     const onlyInactive = req.query.onlyInactive === 'true'; // แสดงเฉพาะสินค้าที่ปิดใช้งาน
     const lowStock = req.query.lowStock === 'true';         // แสดงเฉพาะสินค้าสต็อกต่ำ/หมด
     const discrepancy = req.query.discrepancy === 'true';   // แสดงเฉพาะสินค้าที่ยอดคลาดเคลื่อน (ติดลบ = เป็นไปไม่ได้ทางกายภาพ)
+    const newToday = req.query.newToday === 'true';         // แสดงเฉพาะสินค้าที่เพิ่มเข้าระบบวันนี้ (ไว้ตรวจงานประจำวัน)
     const group = String(req.query.group || '').trim();
 
     // กรองสถานะใช้งานทั้งหมดที่ฝั่ง server เพื่อให้แบ่งหน้าถูกต้อง (ไม่งั้นกรอง client จะเห็นแค่หน้าปัจจุบัน)
@@ -90,6 +93,12 @@ export const getProducts = (req, res) => {
 
     if (discrepancy) {
       whereParts.push('COALESCE(wb.stock_balance, 0) < 0');
+    }
+
+    // created_at มีสองรูปแบบปนกัน (ISO จากหน้าเว็บ / "YYYY-MM-DD HH:MM:SS" จาก CURRENT_TIMESTAMP) และเป็นเวลา UTC ทั้งคู่
+    // date(..., 'localtime') แปลงเป็นวันที่ตามเวลาเครื่องได้ถูกทั้งสองแบบ — สินค้าที่เพิ่มตอนเช้ามืดจะไม่ตกไปเป็นเมื่อวาน
+    if (newToday) {
+      whereParts.push("date(i.created_at, 'localtime') = date('now', 'localtime')");
     }
 
     if (search) {
@@ -137,7 +146,7 @@ export const getProducts = (req, res) => {
       LEFT JOIN rooms rm ON rm.id = i.primary_room_id AND rm.deleted_at IS NULL
       LEFT JOIN item_reserved res ON res.item_id = i.item_id
       WHERE ${whereSql}
-      ORDER BY i.item_name COLLATE NOCASE ASC
+      ORDER BY ${newToday ? 'julianday(i.created_at) DESC, ' : ''}i.item_name COLLATE NOCASE ASC
       LIMIT @limit OFFSET @offset
     `).all({ ...params, limit, offset });
 
@@ -220,7 +229,12 @@ export const createProduct = (req, res) => {
         db.prepare(`
           INSERT INTO stock_in (item_id, quantity, input_date, unit_cost, note)
           VALUES (?, ?, ?, ?, ?)
-        `).run(sku, initialStock, now, Number.isFinite(latestCost) && latestCost > 0 ? latestCost : null, 'Initial stock');
+        `).run(sku, initialStock, now, Number.isFinite(latestCost) && latestCost > 0 ? latestCost : null, INITIAL_STOCK_NOTE);
+        // ต้องมีใบรับเข้าคู่กันด้วย — หน้าประวัติการทำรายการและรายงาน PDF อ่านจากใบรายการเท่านั้น
+        recordInitialStockHistory(db, {
+          transactionId: nextTransactionId('INB'), sku, productName: name, imageUrl, groupId, groupName,
+          quantity: initialStock, date: now, username: req.user?.username || null
+        });
       }
       // เลือกชั้นวางมาตอนสร้าง = วางสต็อกตั้งต้น "ทั้งก้อน" ไว้ตรงนั้น
       // (ตอนสร้างยังไม่มีที่วางอื่น จำนวนจึงไม่กำกวม — ต่างจากตอนแก้ไขที่ของอาจกระจายหลายที่แล้ว)
@@ -237,6 +251,7 @@ export const createProduct = (req, res) => {
     })();
 
     broadcast('products');
+    if (initialStock) broadcast('transactions');
     // เลือกชั้นไว้แต่ไม่ได้ใส่สต็อกตั้งต้น = ยังไม่มีของให้วาง ต้องบอกให้รู้ ไม่งั้นจะงงว่าทำไมผังคลังไม่ขึ้น
     const placedNote = rackId && !initialStock
       ? ' — ยังไม่ได้วางบนชั้น เพราะสต็อกตั้งต้นเป็น 0 (ไปวางได้ที่ผังคลังเมื่อรับของเข้าแล้ว)'
