@@ -4,6 +4,7 @@ import { sendPushToUser, sendPushToRoles, WAREHOUSE_STAFF_ROLES } from '../push.
 import { resolveProjectName } from './projectController.js';
 import { availableForProject, getReservedLocationIds, getStagingLocations, readItemStockContext } from '../utils/projectStock.js';
 import { getItemLocations, syncPrimaryLocation } from '../utils/itemLocations.js';
+import { nextTransactionId } from '../utils/transactionId.js';
 
 class ValidationError extends Error {
   constructor(message) {
@@ -33,18 +34,6 @@ const toNonNegativeInteger = (value) => {
 };
 
 const normalizeSku = (value) => String(value || '').trim().toUpperCase();
-
-// รหัสใบรายการ — เดิมใช้ Date.now() ตรงๆ ถ้าสร้างสองใบในมิลลิวินาทีเดียวกันรหัสจะซ้ำ
-// แล้วชน UNIQUE constraint ของ transactionId กลายเป็น error 500 โดยไม่มีใครเข้าใจว่าทำไม
-// (เจอตอนคืนของสองรายการติดกัน ซึ่งเป็นการใช้งานปกติ)
-//
-// เก็บเลขล่าสุดไว้แล้วบวกทีละ 1 เมื่อชนกัน — รูปแบบรหัสยังเหมือนเดิมทุกประการ
-let lastStamp = 0;
-const nextTransactionId = (prefix) => {
-  const now = Date.now();
-  lastStamp = now > lastStamp ? now : lastStamp + 1;
-  return `${prefix}-${lastStamp}`;
-};
 
 // ด่านกันใบเบิกซ้ำจากการกดปุ่มรัว — 7 ก.ย. 2026 มีใบเดียวกันเป๊ะ 6 ใบเข้ามาห่างกันรวม 299 มิลลิวินาที
 // เพราะหน้าจอไม่ขยับระหว่างรอ ผู้ใช้เลยกดซ้ำ แล้วคำขอที่คิวไว้หลุดออกมาพร้อมกันตอนเน็ตติด

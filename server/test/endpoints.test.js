@@ -13,6 +13,7 @@ const storage = await import('../controllers/storageItemController.js');
 const transactions = await import('../controllers/transactionController.js');
 const reports = await import('../controllers/reportController.js');
 const push = await import('../push.js');
+const initialStock = await import('../utils/initialStockHistory.js');
 
 // ---- สร้างคลังจำลองให้ครบทุกชนิดที่ระบบรองรับ ----
 const planId = db.prepare('SELECT id FROM floor_plans LIMIT 1').get().id;
@@ -313,6 +314,91 @@ test('ใบแรกถูกอนุมัติทันทีก็ยั�
   const again = await call(transactions.createOutboundRequest, dupPayload('คนถูกอนุมัติไว'));
   assert.equal(again.success, false, 'อนุมัติแล้วแต่ยังไม่มารับ = ใบเดิมยังมีชีวิตอยู่ ต้องยังกันซ้ำได้');
   assert.equal(countRequestsOf('คนถูกอนุมัติไว'), 1, 'ต้องไม่มีใบที่สองเล็ดลอดเข้ามา');
+});
+
+// ---- สต็อกตั้งต้นตอนเพิ่มสินค้าใหม่ ----
+// เดิมเขียนแค่ stock_in ยอดคงเหลือถูก แต่ไม่ขึ้นในหน้าประวัติและรายงาน PDF เลย
+const txsOf = (productSku) => transactions.getFullTransactions()
+  .filter((tx) => tx.items.some((item) => item.productId === productSku));
+
+test('เพิ่มสินค้าพร้อมสต็อกตั้งต้น: ขึ้นเป็นรับเข้าในประวัติและรายงาน', async () => {
+  const made3 = await callOk('createProduct', products.createProduct, {
+    body: { name: 'สินค้าสต็อกตั้งต้น', groupId: '01', groupName: 'ทดสอบ', unit: 'ชิ้น', latestCost: 8, initialStock: 7 },
+    user: { username: 'managerX', role: 'Manager' }
+  });
+  const rows = txsOf(made3.sku);
+  assert.equal(rows.length, 1, 'สต็อกตั้งต้นต้องมีใบรับเข้า 1 ใบ');
+  assert.equal(rows[0].type, 'INBOUND');
+  assert.equal(rows[0].status, 'Approved');
+  assert.equal(rows[0].project, initialStock.INITIAL_STOCK_LABEL);
+  assert.equal(rows[0].requesterUsername, 'managerX', 'ต้องบันทึกว่าใครเป็นคนเพิ่ม');
+  assert.equal(Number(rows[0].items[0].requestedQty), 7);
+  assert.equal(rows[0].items[0].groupName, 'ทดสอบ', 'ต้อง snapshot หมวดหมู่ไว้ในใบ');
+
+  const stock = db.prepare('SELECT stock_balance b FROM warehouse_balance WHERE item_id = ?').get(made3.sku).b;
+  assert.equal(stock, 7, 'ใบประวัติต้องไม่ทำให้ยอดคงเหลือนับซ้ำ');
+
+  const now = new Date();
+  const month = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
+  const report = reports.collectReport({ type: 'month', value: month, typeFilter: 'INBOUND' });
+  assert.ok(report.rows.some((row) => row.txId === rows[0].transactionId), 'ต้องอยู่ในรายงาน PDF ด้วย');
+
+  const noStock = await callOk('createProduct', products.createProduct, {
+    body: { name: 'สินค้าไม่มีสต็อกตั้งต้น', groupId: '01', groupName: 'ทดสอบ', unit: 'ชิ้น' }
+  });
+  assert.equal(txsOf(noStock.sku).length, 0, 'ไม่ใส่สต็อกตั้งต้น = ไม่มีของเข้าคลัง ต้องไม่สร้างใบ');
+});
+
+test('เติมประวัติสต็อกตั้งต้นย้อนหลัง: เติมเฉพาะที่ขาด และรันซ้ำไม่เกิดใบซ้ำ', async () => {
+  // จำลองสินค้าที่เพิ่มก่อนแก้บั๊ก: มี stock_in สต็อกตั้งต้น แต่ไม่มีใบรับเข้า
+  const old = await callOk('createProduct', products.createProduct, {
+    body: { name: 'สินค้าเพิ่มก่อนแก้', groupId: '01', groupName: 'ทดสอบ', unit: 'ชิ้น' }
+  });
+  const oldDate = '2026-07-16T02:02:01.727Z';
+  db.prepare('INSERT INTO stock_in (item_id, quantity, input_date, note) VALUES (?, 12, ?, ?)')
+    .run(old.sku, oldDate, initialStock.INITIAL_STOCK_NOTE);
+  const stockBefore = db.prepare('SELECT stock_balance b FROM warehouse_balance WHERE item_id = ?').get(old.sku).b;
+
+  const dry = initialStock.backfillInitialStockHistory(db);
+  assert.deepEqual(dry.rows.map((row) => row.sku), [old.sku], 'ต้องเจอเฉพาะตัวที่ขาด (ตัวที่สร้างหลังแก้มีใบแล้ว)');
+  assert.equal(dry.applied, false);
+  assert.equal(txsOf(old.sku).length, 0, 'โหมดดูผลต้องไม่เขียนอะไรลงฐานข้อมูล');
+
+  const done = initialStock.backfillInitialStockHistory(db, { apply: true });
+  assert.equal(done.applied, true);
+  const rows = txsOf(old.sku);
+  assert.equal(rows.length, 1);
+  assert.equal(rows[0].requestDate, oldDate, 'ใบย้อนหลังต้องลงวันที่ที่ของเข้าคลังจริง รายงานเดือนนั้นจะได้ครบ');
+  assert.equal(rows[0].requesterUsername, 'system', 'ไม่มี audit log ตรงเวลานั้น ต้องใส่เป็น system');
+  assert.equal(Number(rows[0].items[0].requestedQty), 12);
+  assert.equal(
+    db.prepare('SELECT stock_balance b FROM warehouse_balance WHERE item_id = ?').get(old.sku).b,
+    stockBefore,
+    'เติมประวัติต้องไม่เปลี่ยนยอดคงเหลือ'
+  );
+
+  const again = initialStock.backfillInitialStockHistory(db, { apply: true });
+  assert.equal(again.rows.length, 0, 'รันซ้ำต้องไม่เจออะไรให้เติมอีก');
+  assert.equal(txsOf(old.sku).length, 1);
+});
+
+// ---- ตัวกรองรายการใหม่ ----
+test('ตัวกรองรายการใหม่: แสดงเฉพาะสินค้าที่เพิ่มวันนี้ ตัวล่าสุดขึ้นก่อน', async () => {
+  const yesterday = await callOk('createProduct', products.createProduct, {
+    body: { name: 'สินค้าเพิ่มเมื่อวาน', groupId: '01', groupName: 'ทดสอบ', unit: 'ชิ้น' }
+  });
+  // เก็บเป็นรูปแบบ CURRENT_TIMESTAMP (UTC ไม่มี T) เพื่อคุมกรณีข้อมูลเก่าที่ไม่ได้มาจากหน้าเว็บด้วย
+  db.prepare("UPDATE items SET created_at = datetime('now', '-1 day') WHERE item_id = ?").run(yesterday.sku);
+  const latest = await callOk('createProduct', products.createProduct, {
+    body: { name: 'สินค้าเพิ่มล่าสุด', groupId: '01', groupName: 'ทดสอบ', unit: 'ชิ้น' }
+  });
+
+  const list = await callOk('getProducts', products.getProducts, { query: { limit: '500', newToday: 'true' } });
+  const skus = list.products.map((item) => item.sku);
+  assert.ok(skus.includes(latest.sku), 'สินค้าที่เพิ่งเพิ่มต้องอยู่ในรายการใหม่');
+  assert.ok(!skus.includes(yesterday.sku), 'สินค้าที่เพิ่มเมื่อวานต้องไม่อยู่ในรายการใหม่');
+  assert.equal(skus[0], latest.sku, 'ตัวที่เพิ่มล่าสุดต้องขึ้นบนสุด');
+  assert.equal(list.totalItems, skus.length, 'จำนวนรวมต้องนับตามตัวกรองเดียวกัน');
 });
 
 // ---- เลือกผู้รับแจ้งเตือนตามบทบาท ----
