@@ -2,12 +2,15 @@
 // สำรองข้อมูล WMS: ฐานข้อมูล SQLite + โฟลเดอร์ uploads (รูปสินค้า/avatar)
 //
 // วิธีใช้ (จากโฟลเดอร์ server):
-//   node tools/backup.mjs                     → สำรองลง server/backups/<เวลา>/
-//   BACKUP_KEEP=30 node tools/backup.mjs      → เก็บย้อนหลัง 30 ชุด (ค่าเริ่มต้น 14)
-//   BACKUP_DIR=D:\wms-backups node tools/...   → เก็บไว้ที่อื่น (แนะนำคนละไดรฟ์/NAS)
+//   node tools/backup.mjs                            → สำรองลง server/backups/
+//   BACKUP_DIR=G:\wms-backups node tools/backup.mjs  → เก็บไว้ที่อื่น (แนะนำคนละไดรฟ์/NAS)
+//   BACKUP_KEEP_DAYS=90 node tools/backup.mjs        → เก็บฐานข้อมูลย้อนหลังกี่วัน (เริ่มต้น 365)
+//
+// โครงที่ได้:
+//   <BACKUP_DIR>\database\2026\09\identifier-2026-09-15.sqlite   วันละไฟล์ สะสมไปเรื่อยๆ
+//   <BACKUP_DIR>\uploads\                                        รูปทั้งหมด กองเดียว เติมเข้าไป
 //
 // ใช้ db.backup() ของ better-sqlite3 → ได้ไฟล์ที่ consistent แม้ระบบกำลังเขียนอยู่ (รวม WAL)
-// ตั้งให้รันอัตโนมัติด้วย Windows Task Scheduler (ดูคำสั่ง schtasks ที่ผมให้ไว้)
 // ============================================================================
 import fs from 'fs';
 import path from 'path';
@@ -16,30 +19,104 @@ import Database from 'better-sqlite3';
 import { config } from '../config.js';
 
 const serverDir = path.join(path.dirname(fileURLToPath(import.meta.url)), '..');
-const KEEP = Math.max(1, Number(process.env.BACKUP_KEEP || 14));
+const KEEP_DAYS = Math.max(1, Number(process.env.BACKUP_KEEP_DAYS || 365));
 const backupRoot = process.env.BACKUP_DIR || path.join(serverDir, 'backups');
 
-const stamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19); // 2026-07-08T14-30-00
-const dest = path.join(backupRoot, stamp);
-fs.mkdirSync(dest, { recursive: true });
+const listDirs = (dir) => (fs.existsSync(dir)
+  ? fs.readdirSync(dir, { withFileTypes: true }).filter((e) => e.isDirectory()).map((e) => e.name).sort()
+  : []);
 
-// 1) ฐานข้อมูล — .backup() ได้สำเนาที่สมบูรณ์แม้กำลังมีการเขียน
+const countFiles = (dir) => (fs.existsSync(dir)
+  ? fs.readdirSync(dir, { withFileTypes: true, recursive: true }).filter((e) => e.isFile()).length
+  : 0);
+
+// ----------------------------------------------------------------------------
+// 1) ฐานข้อมูล → database\<ปี>\<เดือน>\identifier-<วันที่>.sqlite
+//
+// วันที่ต้องอ่านตามเวลาเครื่อง ไม่ใช่ toISOString() ซึ่งเป็นเวลาสากล (ไทย +7):
+// รอบตีสองของวันที่ 1 จะกลายเป็นวันที่ 31 ของเดือนก่อน แล้วไฟล์ไปตกผิดโฟลเดอร์เดือน
+// ----------------------------------------------------------------------------
+const now = new Date();
+const yyyy = String(now.getFullYear());
+const mm = String(now.getMonth() + 1).padStart(2, '0');
+const dd = String(now.getDate()).padStart(2, '0');
+
+const dbDir = path.join(backupRoot, 'database', yyyy, mm);
+fs.mkdirSync(dbDir, { recursive: true });
+const dbDest = path.join(dbDir, `identifier-${yyyy}-${mm}-${dd}.sqlite`);
+
 const dbPath = path.isAbsolute(config.dbFile) ? config.dbFile : path.join(serverDir, config.dbFile);
+
+// เขียนลงไฟล์ชั่วคราวก่อนแล้วค่อยสวมทับ — ถ้าสำรองพังกลางคัน (ดิสก์เต็ม/ไฟดับ)
+// สำเนาที่ใช้ได้ของเดิมยังอยู่ครบ แทนที่จะเหลือไฟล์ครึ่งๆ กลางๆ ที่กู้ไม่ได้
+const partial = `${dbDest}.part`;
+fs.rmSync(partial, { force: true });
 const db = new Database(dbPath, { readonly: true });
-await db.backup(path.join(dest, 'identifier.sqlite'));
+await db.backup(partial);
 db.close();
+fs.renameSync(partial, dbDest); // รันซ้ำวันเดียวกัน = ทับของเดิม ตั้งใจให้เป็นแบบนั้น
 
-// 2) โฟลเดอร์ uploads (ถ้ามี)
+// ----------------------------------------------------------------------------
+// 2) รูปภาพ → uploads\ กองเดียว แบบ "เติมเข้าไป" ไม่ใช่ก๊อปใหม่ทั้งชุด
+//
+// force:false = ไฟล์ไหนมีอยู่แล้วให้ข้ามไปเงียบๆ รอบแรกจึงขนครบ 231 MB
+// แต่รอบต่อๆ ไปคัดลอกเฉพาะรูปที่เพิ่งอัปโหลด (จริงราวสัปดาห์ละ 10 ไฟล์)
+//
+// ที่ทำแบบนี้ได้เพราะแอปไม่เคยลบรูป และตั้งชื่อไฟล์เป็นเวลา+เลขสุ่มจึงไม่มีทางซ้ำ
+// → ของในกองนี้มีแต่เพิ่ม ไม่มีทางหายเพราะถูกทับ
+// ----------------------------------------------------------------------------
 const uploads = path.join(serverDir, 'uploads');
-if (fs.existsSync(uploads)) fs.cpSync(uploads, path.join(dest, 'uploads'), { recursive: true });
+const uploadsDest = path.join(backupRoot, 'uploads');
+const hadFiles = countFiles(uploadsDest);
+if (fs.existsSync(uploads)) fs.cpSync(uploads, uploadsDest, { recursive: true, force: false });
+const nowFiles = countFiles(uploadsDest);
 
-// 3) หมุนเวียน: เก็บเฉพาะ KEEP ชุดล่าสุด ลบชุดเก่าทิ้ง
-const sets = fs.readdirSync(backupRoot)
-  .filter((n) => { try { return fs.statSync(path.join(backupRoot, n)).isDirectory(); } catch { return false; } })
-  .sort();
-for (const old of sets.slice(0, Math.max(0, sets.length - KEEP))) {
-  fs.rmSync(path.join(backupRoot, old), { recursive: true, force: true });
+// ----------------------------------------------------------------------------
+// 3) ลบฐานข้อมูลที่เก่าเกินกำหนด — นับจาก "วันที่ในชื่อไฟล์" ไม่ใช่จำนวนโฟลเดอร์
+//
+// ตัวเก่านับโฟลเดอร์ชั้นบนสุดแล้วเก็บไว้ N อัน พอโฟลเดอร์ซ้อนเป็นปี/เดือน
+// มันจะเห็น "2026" เป็นหนึ่งชุด แล้วไม่ลบอะไรเลยตลอดกาลจนดิสก์เต็มโดยไม่มี error
+// → ให้ตัวไฟล์เป็นแหล่งความจริงอย่างเดียว โฟลเดอร์เป็นแค่ที่เก็บ
+//
+// แตะเฉพาะไฟล์ที่ชื่อตรงแบบแผนเท่านั้น อย่างอื่นที่คนเอามาวางไว้ไม่ยุ่งด้วย
+// ----------------------------------------------------------------------------
+const cutoff = new Date(now);
+cutoff.setDate(cutoff.getDate() - KEEP_DAYS);
+
+const dbRoot = path.join(backupRoot, 'database');
+let removed = 0;
+let kept = 0;
+for (const year of listDirs(dbRoot)) {
+  const yearDir = path.join(dbRoot, year);
+  for (const month of listDirs(yearDir)) {
+    const monthDir = path.join(yearDir, month);
+    for (const name of fs.readdirSync(monthDir)) {
+      const m = /^identifier-(\d{4})-(\d{2})-(\d{2})\.sqlite$/.exec(name);
+      if (!m) continue;
+      if (new Date(+m[1], +m[2] - 1, +m[3]) < cutoff) {
+        fs.rmSync(path.join(monthDir, name), { force: true });
+        removed += 1;
+      } else {
+        kept += 1;
+      }
+    }
+    if (fs.readdirSync(monthDir).length === 0) fs.rmdirSync(monthDir);
+  }
+  if (fs.readdirSync(yearDir).length === 0) fs.rmdirSync(yearDir);
 }
 
-const sizeMB = (fs.statSync(path.join(dest, 'identifier.sqlite')).size / 1024 / 1024).toFixed(2);
-console.log(`✅ สำรองข้อมูลเสร็จ: ${dest} (ฐานข้อมูล ${sizeMB} MB, เก็บย้อนหลัง ${KEEP} ชุด)`);
+// ----------------------------------------------------------------------------
+const sizeMB = (fs.statSync(dbDest).size / 1024 / 1024).toFixed(2);
+console.log('✅ สำรองข้อมูลเสร็จ');
+console.log(`   ฐานข้อมูล : ${dbDest}  (${sizeMB} MB)`);
+console.log(`   รูปภาพ    : ${uploadsDest}  (ทั้งหมด ${nowFiles} ไฟล์, เพิ่มรอบนี้ ${nowFiles - hadFiles})`);
+console.log(`   เก็บย้อนหลัง ${KEEP_DAYS} วัน — ตอนนี้มี ${kept} วัน${removed ? `, ลบที่เก่าเกินกำหนด ${removed} ไฟล์` : ''}`);
+
+// ชุดสำรองแบบเก่า (โฟลเดอร์ชื่อเป็นเวลา) ระบบใหม่ไม่แตะและไม่ลบให้ เพราะเป็นข้อมูลจริง
+// ที่ยังกู้ได้ แต่ถ้าปล่อยไว้จะกินที่ชุดละ ~230 MB โดยไม่มีใครสังเกต จึงบอกให้เห็นทุกครั้ง
+const legacy = listDirs(backupRoot).filter((n) => /^\d{4}-\d{2}-\d{2}T/.test(n));
+if (legacy.length) {
+  console.log('');
+  console.log(`⚠️  ยังมีชุดสำรองแบบเก่าค้างอยู่ ${legacy.length} ชุด (ชุดละ ~230 MB)`);
+  console.log(`   อยู่ที่ ${backupRoot} — ระบบใหม่ไม่ลบให้ ตรวจแล้วไม่ต้องใช้ ลบทิ้งเองได้เลย`);
+}

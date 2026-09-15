@@ -103,7 +103,7 @@ npm run lint
 ⚠️ `npm run audit` ไม่ได้อ่านค่าจากไฟล์ตั้งค่า ถ้าจะตรวจฐานข้อมูลตัวอื่นต้องส่ง path เข้าไปเอง
 
 ```bash
-cd server && npm run audit -- backups/2026-09-11T09-20-15/identifier.sqlite
+cd server && npm run audit -- backups/database/2026/09/identifier-2026-09-15.sqlite
 ```
 
 ---
@@ -156,5 +156,15 @@ windows/            สคริปต์สำหรับเครื่อง
 ```bash
 cd server && npm run backup
 ```
+
+ผลที่ได้แยกเป็นสองส่วน — ฐานข้อมูลเก็บวันละไฟล์สะสมไว้ ส่วนรูปเป็นกองเดียวที่เติมเฉพาะไฟล์ใหม่เข้าไปทุกรอบ
+
+```
+backups/
+  database/2026/09/identifier-2026-09-15.sqlite    เก็บย้อนหลัง 365 วัน (BACKUP_KEEP_DAYS)
+  uploads/                                          รูปทั้งหมด
+```
+
+ปลายทางย้ายได้ด้วย `BACKUP_DIR` โฟลเดอร์ปี/เดือนสร้างเองตามวันที่ของเครื่อง
 
 **ห้ามคัดลอกโฟลเดอร์ `node_modules` ข้ามเครื่อง** — มีส่วนที่คอมไพล์ผูกกับเครื่องและเวอร์ชัน Node ให้ `npm ci` ใหม่เสมอ

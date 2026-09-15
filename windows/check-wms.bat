@@ -6,11 +6,12 @@ REM
 REM  Answers the question "is the system alright?" without needing to know
 REM  what a tunnel or a scheduled task is.
 REM
-REM  APP_PORT / BACKUP_DEST must match backup-now.bat and server\.env
+REM  These three must match backup-now.bat and server\.env
 REM ============================================================================
 setlocal
 set "APP_PORT=5000"
 set "BACKUP_DEST=G:\wms-backups"
+set "SECRETS_DEST=D:\wms-secrets"
 
 pushd "%~dp0.."
 set "ROOT=%CD%"
@@ -67,7 +68,10 @@ powershell -NoProfile -Command "$i = Get-ScheduledTaskInfo -TaskName 'WMS Backup
 echo.
 
 echo [5] Backups on %BACKUP_DEST%
-powershell -NoProfile -Command "$d = $env:BACKUP_DEST; if (-not (Test-Path $d)) { '     Destination not reachable - is the drive connected?' } else { $sets = @(Get-ChildItem $d -Directory -ErrorAction SilentlyContinue); if ($sets.Count -eq 0) { '     No backup sets yet.' } else { $b = $sets | Sort-Object LastWriteTime -Descending | Select-Object -First 1; $mb = (Get-ChildItem $b.FullName -Recurse -File | Measure-Object Length -Sum).Sum / 1MB; $age = [int]((Get-Date) - $b.LastWriteTime).TotalHours; '     Newest  : ' + $b.Name + '   ' + ('{0:N0}' -f $mb) + ' MB   ' + $age + ' hours ago'; '     Sets    : ' + $sets.Count; if ($age -gt 48) { '     [!] More than 2 days old - check the backup task.' } } }"
+REM Count database FILES, never folders. Folders are nested by year/month now,
+REM so anything that counts top-level folders sees two ("database", "uploads")
+REM and cheerfully reports healthy forever.
+powershell -NoProfile -Command "$d = $env:BACKUP_DEST; if (-not (Test-Path $d)) { '     Destination not reachable - is the drive connected?'; exit }; $dbs = @(Get-ChildItem (Join-Path $d 'database') -Recurse -File -Filter 'identifier-*.sqlite' -ErrorAction SilentlyContinue); if ($dbs.Count -eq 0) { '     No database backups yet.' } else { $n = $dbs | Sort-Object Name | Select-Object -Last 1; $age = [int]((Get-Date) - $n.LastWriteTime).TotalHours; '     Database : ' + $n.Name + '   ' + $age + ' hours ago'; '     History  : ' + $dbs.Count + ' daily copies, ' + ('{0:N0}' -f (($dbs | Measure-Object Length -Sum).Sum / 1MB)) + ' MB'; if ($age -gt 48) { '     [!] More than 2 days old - the backup task is not running.' } }; $up = @(Get-ChildItem (Join-Path $d 'uploads') -Recurse -File -ErrorAction SilentlyContinue); if ($up.Count -eq 0) { '     Images   : none mirrored yet.' } else { '     Images   : ' + $up.Count + ' files, ' + ('{0:N0}' -f (($up | Measure-Object Length -Sum).Sum / 1MB)) + ' MB' }; if (Test-Path (Join-Path $env:SECRETS_DEST '.env')) { '     Settings : .env copy present in ' + $env:SECRETS_DEST } else { '     [!] No .env copy in ' + $env:SECRETS_DEST + ' - this machine cannot be rebuilt without it.' }; $old = @(Get-ChildItem $d -Directory -ErrorAction SilentlyContinue | Where-Object { $_.Name -like '20??-??-??T*' }); if ($old.Count -gt 0) { '     [!] ' + $old.Count + ' old-format backup sets are still here (~230 MB each).' }"
 echo.
 
 echo [6] Last 15 lines of wms.log

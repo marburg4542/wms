@@ -7,14 +7,18 @@ REM
 REM  Double-click (Run as administrator not required) or let the scheduled
 REM  task call it with --silent.
 REM
-REM  ---- EDIT THESE TWO LINES IF THE DRIVE CHANGES ----
-REM  Keep them on a DIFFERENT physical drive than the app, so one dead disk
-REM  cannot take the live data and every backup with it.
+REM  ---- EDIT THESE THREE LINES IF THE DRIVES CHANGE ----
+REM  BACKUP_DEST must be on a DIFFERENT physical drive than the app, so one
+REM  dead disk cannot take the live data and every backup with it.
+REM
+REM  SECRETS_DEST is deliberately NOT on the backup drive. That drive is synced
+REM  to Google Drive, and .env holds the token signing secret, the push private
+REM  key and the mail password. Keep it where no cloud client is watching.
 REM ============================================================================
 setlocal
 set "BACKUP_DEST=G:\wms-backups"
-set "SECRETS_DEST=G:\wms-secrets"
-set "KEEP=14"
+set "SECRETS_DEST=D:\wms-secrets"
+set "KEEP_DAYS=365"
 REM ---------------------------------------------------------------------------
 
 pushd "%~dp0.."
@@ -54,7 +58,7 @@ echo.
 
 cd /d "%ROOT%\server"
 set "BACKUP_DIR=%BACKUP_DEST%"
-set "BACKUP_KEEP=%KEEP%"
+set "BACKUP_KEEP_DAYS=%KEEP_DAYS%"
 "%NODE%" tools\backup.mjs
 if errorlevel 1 (
   echo [%date% %time%] FAILED - backup.mjs returned an error >> "%RUNLOG%"
@@ -82,7 +86,7 @@ if exist "%ROOT%\server\.env" (
 
 echo [%date% %time%] OK - backed up to %BACKUP_DEST% >> "%RUNLOG%"
 echo.
-echo   [OK] Done. Keeping the newest %KEEP% sets, older ones are removed.
+echo   [OK] Done. Daily database copies are kept for %KEEP_DAYS% days.
 echo.
 if not defined SILENT pause
 exit /b 0
