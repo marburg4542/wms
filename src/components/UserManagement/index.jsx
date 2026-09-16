@@ -68,7 +68,12 @@ export default function UserManagement() {
       
       if (data.success) {
         setUsers(users.map(u => u.id === userId ? { ...u, status: newStatus } : u));
-        toast.success('อัปเดตสถานะและส่งอีเมลแจ้งเตือนสำเร็จ');
+        // เดิมขึ้นว่าส่งอีเมลสำเร็จเสมอ ทั้งที่ระบบอีเมลอาจเสียอยู่ — ผู้ดูแลจะได้รู้ว่าต้องแจ้งผู้ใช้เอง
+        if (data.emailSent === false) {
+          toast(`${data.message} — กรุณาแจ้งผู้ใช้ด้วยตนเอง`, { icon: '⚠️', duration: 6000 });
+        } else {
+          toast.success(data.message || 'อัปเดตสถานะแล้ว');
+        }
       }
     } catch (err) {
       console.error('Status update failed', err);

@@ -10,6 +10,7 @@ import {
   getSessionId
 } from '../data/userManager.js';
 import { sendEmail } from '../utils/sendEmail.js';
+import { accountStatusEmail } from '../utils/emailTemplates.js';
 import jwt from 'jsonwebtoken';
 import bcrypt from 'bcryptjs';
 import { config } from '../config.js';
@@ -58,18 +59,29 @@ export const updateUserStatus = async (req, res) => {
       return res.status(400).json({ success: false, message: 'ต้องมี Admin ที่ใช้งานได้อย่างน้อย 1 คน' });
     }
 
+    const previousStatus = existing.status;
     const user = updateUser(userId, { status });
-    logAudit(req.user?.username, 'user.status_update', 'user', userId, { status });
+    logAudit(req.user?.username, 'user.status_update', 'user', userId, { status, previousStatus });
 
-    const subject = status === 'Active' ? 'WMS - บัญชีของคุณได้รับการอนุมัติแล้ว 🎉' : 'WMS - บัญชีของคุณถูกปฏิเสธ';
-    const htmlMessage = status === 'Active'
-      ? `<h2>ยินดีด้วยคุณ ${user.username}</h2><p>บัญชีของคุณได้รับการอนุมัติให้เข้าใช้งานระบบ WMS แล้ว คุณสามารถเข้าสู่ระบบได้ทันที</p><a href="${config.frontendUrl}/login">เข้าสู่ระบบ</a>`
-      : `<h2>เรียนคุณ ${user.username}</h2><p>ขออภัย บัญชีของคุณไม่ได้รับการอนุมัติให้เข้าใช้งานระบบ</p>`;
-
-    await sendEmail(user.email, subject, htmlMessage);
+    // ฉบับอีเมลขึ้นกับสถานะเดิมด้วย — ปุ่ม "ระงับ" กับ "ปฏิเสธ" ส่งสถานะเดียวกัน แต่ความหมายต่างกัน
+    const email = accountStatusEmail({
+      previousStatus,
+      status,
+      username: user.username,
+      roleLabel: ROLE_LABEL[user.role] || user.role,
+      loginUrl: `${config.frontendUrl}/login`
+    });
+    // null = ไม่มีอีเมลต้องส่ง | true/false = ผลการส่ง — หน้าเว็บต้องรู้ จะได้ไม่บอกว่าส่งแล้วทั้งที่ส่งไม่ออก
+    const emailSent = email ? await sendEmail(user.email, email) : null;
 
     broadcast('users');
-    res.json({ success: true, message: 'อัปเดตสถานะและส่งอีเมลแจ้งเตือนสำเร็จ' });
+    res.json({
+      success: true,
+      emailSent,
+      message: emailSent === false
+        ? 'อัปเดตสถานะแล้ว แต่ส่งอีเมลแจ้งผู้ใช้ไม่สำเร็จ'
+        : emailSent ? 'อัปเดตสถานะและส่งอีเมลแจ้งผู้ใช้แล้ว' : 'อัปเดตสถานะแล้ว'
+    });
   } catch {
     res.status(500).json({ success: false, message: 'Server error' });
   }

@@ -3,6 +3,7 @@ import bcrypt from 'bcryptjs';
 import crypto from 'crypto';
 import { getUserById, getUserByUsername, getUserByEmail, createUser, updateUser, setSessionId } from '../data/userManager.js';
 import { sendEmail } from '../utils/sendEmail.js';
+import { passwordResetEmail, registrationReceivedEmail } from '../utils/emailTemplates.js';
 import { config } from '../config.js';
 import db, { logAudit } from '../db.js';
 import { broadcast } from '../events.js';
@@ -107,11 +108,7 @@ export const register = async (req, res) => {
     url: '/users'
   }).catch(() => {});
 
-  await sendEmail(email, 'WMS - ยืนยันการสมัครสมาชิก (รอผลอนุมัติ)', `
-    <h2>สวัสดีคุณ ${username}</h2>
-    <p>ระบบได้รับคำขอสมัครสมาชิกของคุณเรียบร้อยแล้ว ขณะนี้สถานะคือ <b>กำลังรอการอนุมัติ</b></p>
-    <p>หากผู้ดูแลระบบทำการอนุมัติ คุณจะได้รับอีเมลแจ้งเตือนอีกครั้ง</p>
-  `);
+  await sendEmail(email, registrationReceivedEmail({ username, email }));
 
   return res.status(200).json({ success: true, message: 'สมัครสมาชิกสำเร็จ กรุณารอการอนุมัติ' });
 };
@@ -142,12 +139,11 @@ export const forgotPassword = async (req, res) => {
     const baseUrl = config.frontendUrls.includes(origin) ? origin : config.frontendUrl;
     const resetLink = `${baseUrl}/reset-password/${token}`;
 
-    await sendEmail(email, 'WMS - รีเซ็ตรหัสผ่าน', `
-      <h2>คำขอรีเซ็ตรหัสผ่าน</h2>
-      <p>คลิกที่ลิงก์ด้านล่างเพื่อตั้งรหัสผ่านใหม่ของคุณ:</p>
-      <a href="${resetLink}" style="padding: 10px 20px; background: #0D8ABC; color: white; text-decoration: none; border-radius: 5px;">รีเซ็ตรหัสผ่าน</a>
-      <p><i>หากคุณไม่ได้ทำรายการนี้ กรุณาเพิกเฉยต่ออีเมลฉบับนี้</i></p>
-    `);
+    await sendEmail(email, passwordResetEmail({
+      username: user.username,
+      resetLink,
+      expiresInMinutes: RESET_TOKEN_TTL_MS / 60000
+    }));
   }
 
   return res.json({ success: true, message: 'หากอีเมลนี้อยู่ในระบบ เราจะส่งลิงก์รีเซ็ตรหัสผ่านให้' });
