@@ -139,11 +139,20 @@ export const forgotPassword = async (req, res) => {
     const baseUrl = config.frontendUrls.includes(origin) ? origin : config.frontendUrl;
     const resetLink = `${baseUrl}/reset-password/${token}`;
 
-    await sendEmail(email, passwordResetEmail({
+    // ไม่ยืนรอผลส่งอีเมลก่อนตอบผู้ใช้ — ข้อความตอบกลับเหมือนกันทุกกรณีอยู่แล้ว รอไปก็ไม่ได้อะไรเพิ่ม
+    // แต่เสียสองอย่าง: จอค้าง ~4 วินาทีจนคนกดซ้ำ แล้วลิงก์ฉบับแรกตายทันทีเพราะโดนลบทิ้งตอนขอใหม่
+    // และเวลาตอบที่ต่างกัน 10 เท่า (4 วินาที vs 0.4) ฟ้องว่าอีเมลนี้มีบัญชีอยู่จริงไหม
+    // ทั้งที่ข้อความกลางๆ ข้างล่างตั้งใจปิดเรื่องนั้นไว้
+    // เฉพาะจุดนี้เท่านั้น — หน้าอนุมัติบัญชีต้องรอผลจริงต่อไป เพราะมันรายงานผลส่งให้แอดมินเห็น
+    sendEmail(email, passwordResetEmail({
       username: user.username,
       resetLink,
       expiresInMinutes: RESET_TOKEN_TTL_MS / 60000
-    }));
+    })).catch((error) => {
+      // sendEmail กลืน error ไว้เองอยู่แล้ว ด่านนี้กันเฉพาะกรณีที่โยนออกมานอกเหนือจากนั้น
+      // ไม่งั้น promise ที่ไม่มีใครรับจะทำให้ process ทั้งตัวดับ
+      console.error(`❌ ส่งลิงก์รีเซ็ตรหัสผ่านไปที่ ${email} ไม่สำเร็จ: ${error.message}`);
+    });
   }
 
   return res.json({ success: true, message: 'หากอีเมลนี้อยู่ในระบบ เราจะส่งลิงก์รีเซ็ตรหัสผ่านให้' });

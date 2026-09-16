@@ -24,6 +24,8 @@ export default function LoginPage() {
 
   // Forgot password field
   const [email, setEmail] = useState('');
+  // กันกดปุ่มรัวระหว่างรอเซิร์ฟเวอร์ตอบ ใช้แพตเทิร์นเดียวกับปุ่มส่งใบเบิก
+  const [forgotSubmitting, setForgotSubmitting] = useState(false);
 
   // Load remembered username
   useEffect(() => {
@@ -97,18 +99,29 @@ export default function LoginPage() {
   // 3) Forgot Password
   const handleForgot = async (e) => {
     e.preventDefault();
+    // ขอลิงก์ใหม่ทุกครั้งจะลบลิงก์เก่าทิ้ง กดสองทีจึงได้อีเมลสองฉบับ
+    // แต่ฉบับแรกที่มาถึงก่อนกลับกดไม่ได้แล้ว — ผู้ใช้เจอลิงก์ตายโดยไม่รู้สาเหตุ
+    if (forgotSubmitting) return;
+    setForgotSubmitting(true);
     try {
       const data = await fetchApi('/api/forgot-password', {
         method: 'POST',
         body: JSON.stringify({ email }),
       });
-      
+
       if (data.success) {
-        toast.success('ส่งลิงก์รีเซ็ตรหัสผ่านไปที่อีเมลแล้ว');
+        // เตือนเรื่องจดหมายขยะตั้งแต่ตอนนี้ เพราะระบบส่งจากบัญชี Gmail ธรรมดา
+        // อีเมลจึงมีโอกาสไม่เข้ากล่องหลัก ถ้าไม่บอกไว้ผู้ใช้จะนั่งรอเก้อแล้วกดขอใหม่ซ้ำๆ
+        toast.success(
+          'ส่งลิงก์รีเซ็ตรหัสผ่านไปที่อีเมลแล้ว หากไม่เห็นภายใน 5 นาที กรุณาตรวจในจดหมายขยะ (Spam)',
+          { duration: 8000 }
+        );
         setMode('login');
       }
     } catch (err) {
       console.error('Forgot Password Failed', err);
+    } finally {
+      setForgotSubmitting(false);
     }
   };
 
@@ -253,9 +266,17 @@ export default function LoginPage() {
                   required
                 />
               </div>
-              <button type="submit" className="btn btn-primary rounded-full w-full text-white font-semibold mt-4">
-                ส่งลิงก์รีเซ็ตรหัสผ่าน
+              <button
+                type="submit"
+                className="btn btn-primary rounded-full w-full text-white font-semibold mt-4"
+                disabled={forgotSubmitting}
+              >
+                {forgotSubmitting && <span className="loading loading-spinner loading-xs" />}
+                {forgotSubmitting ? 'กำลังส่ง...' : 'ส่งลิงก์รีเซ็ตรหัสผ่าน'}
               </button>
+              <p className="text-xs text-center text-base-content/60 mt-2">
+                อีเมลอาจไปอยู่ในจดหมายขยะ (Spam) หากไม่เห็นในกล่องหลัก
+              </p>
             </form>
             <p className="mt-6 text-sm text-center text-base-content/70">
               นึกรหัสผ่านออกแล้ว?{' '}
