@@ -345,8 +345,10 @@ export const updateProduct = (req, res) => {
     }
 
     if (requestedSku !== sku) {
-      if (!requestedSku.startsWith(`${groupId}-`)) {
-        return res.status(400).json({ success: false, message: `SKU ใหม่ต้องขึ้นต้นด้วยรหัสหมวดหมู่ (${groupId}-)` });
+      // รหัสในระบบนี้เป็นตัวเลขล้วน หมวด 2 หลัก + ลำดับ 3 หลัก (เช่น 02001) ไม่มีขีดคั่น
+      // (เดิมด่านนี้ตรวจหา `${groupId}-` ตกค้างจากรูปแบบรหัสยุคเก่า — ปฏิเสธรหัสทุกแบบที่หน้าจอส่งมาได้ การแก้รหัสรายตัวจึงใช้ไม่ได้เลย)
+      if (!requestedSku.startsWith(groupId)) {
+        return res.status(400).json({ success: false, message: `SKU ใหม่ต้องขึ้นต้นด้วยรหัสหมวดหมู่ (${groupId})` });
       }
       const dup = db.prepare('SELECT item_id FROM items WHERE item_id = ?').get(requestedSku);
       if (dup) {
