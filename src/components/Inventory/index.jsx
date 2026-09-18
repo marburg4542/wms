@@ -55,8 +55,12 @@ export default function Inventory() {
   const [reqProject, setReqProject] = useState('');
   const [projectList, setProjectList] = useState([]);      // [{id, name}] รายชื่อโปรเจกต์
   const [selectedProject, setSelectedProject] = useState(''); // ตัวกรอง/โปรเจกต์ปัจจุบันของการเบิก (เติมให้ตะกร้าอัตโนมัติ)
-  const [projectModal, setProjectModal] = useState(false); // modal จัดการโปรเจกต์ (เพิ่ม/ลบ)
+  const [projectModal, setProjectModal] = useState(false); // modal จัดการโปรเจกต์ (เพิ่ม/แก้ชื่อ/ลบ)
   const [newProjectName, setNewProjectName] = useState('');
+  const [editingProjectId, setEditingProjectId] = useState(null); // โปรเจกต์ที่กำลังแก้ชื่ออยู่ (แก้คาในแถวเลย ไม่เด้ง modal ซ้อน)
+  const [editingProjectName, setEditingProjectName] = useState('');
+  const [keepProjectHistory, setKeepProjectHistory] = useState(false); // เก็บชื่อเดิมไว้ในใบที่ปิดจบแล้ว (งานคนละรอบ)
+  const [renaming, setRenaming] = useState(false);          // กันกดซ้ำ งานนี้แก้ประวัติหลายร้อยแถวต่อหนึ่งครั้ง
   const [categoryModal, setCategoryModal] = useState(false); // modal จัดการหมวดหมู่ (เพิ่ม/ลบ/ยุบ)
   const [newCategoryName, setNewCategoryName] = useState('');
   const [mergeFrom, setMergeFrom] = useState('');
@@ -252,6 +256,30 @@ export default function Inventory() {
         toast.success(j.existed ? `มีโปรเจกต์นี้อยู่แล้ว: ${j.project.name}` : `เพิ่มโปรเจกต์ "${j.project.name}"`);
       }
     } catch { toast.error('เพิ่มโปรเจกต์ไม่สำเร็จ'); }
+  };
+
+  // เปลี่ยนชื่อโปรเจกต์ — เซิร์ฟเวอร์ไล่แก้ชื่อในใบเบิกและประวัติรับเข้า/เบิกออกให้ในครั้งเดียว
+  // ต้องแก้ตามทั้งหมด ไม่งั้นโควตาพื้นที่จัดเตรียมเพี้ยนทันที เพราะทะเบียนถือชื่อใหม่แต่ใบเก่าถือชื่อเดิม
+  const startRenameProject = (p) => { setEditingProjectId(p.id); setEditingProjectName(p.name); setKeepProjectHistory(false); };
+  const cancelRenameProject = () => { setEditingProjectId(null); setEditingProjectName(''); setKeepProjectHistory(false); };
+
+  const renameProjectHandler = async (p) => {
+    const name = editingProjectName.trim();
+    if (!name || name === p.name) { cancelRenameProject(); return; }
+    setRenaming(true);
+    try {
+      const j = await fetchApi(`/api/projects/${p.id}`, { method: 'PUT', body: JSON.stringify({ name, keepHistory: keepProjectHistory }) });
+      if (j.success) {
+        cancelRenameProject();
+        loadProjects();
+        // ตัวกรองกับตะกร้าถือ "ชื่อ" ไม่ใช่ id จึงต้องย้ายตามเอง ไม่งั้นหน้าจอค้างที่ชื่อเก่าแล้วกรองได้ศูนย์รายการ
+        if (selectedProject === p.name) setSelectedProject(name);
+        if (reqProject === p.name) setReqProject(name);
+        toast.success(j.message || `เปลี่ยนชื่อเป็น "${name}" แล้ว`);
+      }
+    } catch {
+      // fetchApi เด้ง toast ข้อความจริงจากเซิร์ฟเวอร์ให้แล้ว (เช่น ชื่อซ้ำ/ชนป้ายระบบ) ทับซ้ำจะกลบของเดิม
+    } finally { setRenaming(false); }
   };
 
   const deleteProjectHandler = async (p) => {
@@ -581,7 +609,7 @@ export default function Inventory() {
         />
       )}
 
-      {/* จัดการโปรเจกต์ (Admin/Manager) — เพิ่ม/ลบ */}
+      {/* จัดการโปรเจกต์ (Admin/Manager) — เพิ่ม/เปลี่ยนชื่อ/ลบ */}
       {projectModal && (
         <div className="fixed inset-0 z-100 flex items-center justify-center backdrop-blur-md p-4" onClick={() => setProjectModal(false)}>
           <div className="glass-modal p-5 sm:p-6 rounded-2xl w-full max-w-md max-h-[85vh] overflow-y-auto" onClick={e => e.stopPropagation()}>
@@ -596,9 +624,40 @@ export default function Inventory() {
               {projectList.length === 0 ? (
                 <div className="text-center opacity-50 text-sm py-6">ยังไม่มีโปรเจกต์</div>
               ) : projectList.map(p => (
-                <div key={p.id} className="flex items-center justify-between bg-base-200/50 rounded-lg px-3 py-2">
-                  <span className="text-sm">{p.name}</span>
-                  <button className="btn btn-ghost btn-xs text-error" onClick={() => deleteProjectHandler(p)}>ลบ</button>
+                <div key={p.id} className="flex items-center justify-between gap-2 bg-base-200/50 rounded-lg px-3 py-2">
+                  {editingProjectId === p.id ? (
+                    <div className="w-full space-y-2">
+                      <div className="flex items-center gap-2">
+                        <input type="text" autoFocus className="input input-bordered input-xs w-full" value={editingProjectName}
+                          onChange={e => setEditingProjectName(e.target.value)}
+                          onKeyDown={e => {
+                            if (e.key === 'Enter') { e.preventDefault(); renameProjectHandler(p); }
+                            if (e.key === 'Escape') { e.preventDefault(); cancelRenameProject(); }
+                          }} />
+                        <button className="btn btn-xs btn-primary text-white shrink-0" disabled={renaming} onClick={() => renameProjectHandler(p)}>
+                          {renaming ? <span className="loading loading-spinner loading-xs" /> : 'บันทึก'}
+                        </button>
+                        <button className="btn btn-ghost btn-xs shrink-0" disabled={renaming} onClick={cancelRenameProject}>ยกเลิก</button>
+                      </div>
+                      {/* ใบที่ยังไม่ปิดเปลี่ยนตามเสมอ ไม่ว่าจะติ๊กหรือไม่ — ไม่งั้นโควตาพื้นที่จัดเตรียมเพี้ยน จึงไม่ให้เลือก */}
+                      <label className="flex items-start gap-2 cursor-pointer">
+                        <input type="checkbox" className="checkbox checkbox-xs mt-0.5 shrink-0"
+                          checked={keepProjectHistory} onChange={e => setKeepProjectHistory(e.target.checked)} />
+                        <span className="text-[11px] leading-snug opacity-70">
+                          เก็บชื่อเดิมไว้ในใบที่ปิดจบแล้ว — ใช้เมื่อชื่อใหม่คืองานคนละรอบ
+                          <span className="block opacity-80">ใบที่ยังไม่ปิดจะเปลี่ยนตามเสมอ · ใบเก่าจะกรองด้วยชื่อใหม่ไม่เจอ</span>
+                        </span>
+                      </label>
+                    </div>
+                  ) : (
+                    <>
+                      <span className="text-sm truncate">{p.name}</span>
+                      <span className="flex items-center shrink-0">
+                        <button className="btn btn-ghost btn-xs" title="เปลี่ยนชื่อ" onClick={() => startRenameProject(p)}>✏️</button>
+                        <button className="btn btn-ghost btn-xs text-error" onClick={() => deleteProjectHandler(p)}>ลบ</button>
+                      </span>
+                    </>
+                  )}
                 </div>
               ))}
             </div>

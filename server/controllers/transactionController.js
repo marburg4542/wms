@@ -3,6 +3,7 @@ import { broadcast } from '../events.js';
 import { sendPushToUser, sendPushToRoles, WAREHOUSE_STAFF_ROLES } from '../push.js';
 import { resolveProjectName } from './projectController.js';
 import { availableForProject, getReservedLocationIds, getStagingLocations, readItemStockContext } from '../utils/projectStock.js';
+import { ADJUSTMENT_LABEL, INBOUND_FALLBACK_LABEL } from '../utils/projects.js';
 import { getItemLocations, syncPrimaryLocation } from '../utils/itemLocations.js';
 import { nextTransactionId } from '../utils/transactionId.js';
 
@@ -359,7 +360,7 @@ export const createInboundTransaction = (req, res) => {
       const txInfo = db.prepare(`
         INSERT INTO wms_transactions (transactionId, type, requesterUsername, project, status, requestDate, resolvedDate, adminUsername)
         VALUES (?, 'INBOUND', ?, ?, 'Approved', ?, ?, ?)
-      `).run(transactionId, req.user.username, note || project || 'รับอะไหล่เข้า', requestDate, requestDate, req.user.username);
+      `).run(transactionId, req.user.username, note || project || INBOUND_FALLBACK_LABEL, requestDate, requestDate, req.user.username);
 
       // ถ้าคำขอไม่ได้แนบรูปมา ใช้รูปที่ตั้งค่าไว้แล้วของสินค้าตัวนี้แทน เพื่อให้ประวัติแสดงรูปได้
       const finalImageUrl = imageUrl
@@ -464,8 +465,8 @@ export const adjustStock = (req, res) => {
       // บันทึกใบ ADJUSTMENT ไว้ให้เห็นในประวัติ/กิจกรรมล่าสุด (สถานะ Approved ทันที)
       const txInfo = db.prepare(`
         INSERT INTO wms_transactions (transactionId, type, requesterUsername, project, status, requestDate, resolvedDate, adminUsername, adminMessage)
-        VALUES (?, 'ADJUSTMENT', ?, 'ปรับยอดสต็อก', 'Approved', ?, ?, ?, ?)
-      `).run(transactionId, req.user.username, now, now, req.user.username, `${current} → ${countedQty} (${reason})`);
+        VALUES (?, 'ADJUSTMENT', ?, ?, 'Approved', ?, ?, ?, ?)
+      `).run(transactionId, req.user.username, ADJUSTMENT_LABEL, now, now, req.user.username, `${current} → ${countedQty} (${reason})`);
 
       db.prepare(`
         INSERT INTO wms_transaction_items (tx_id, productId, sku, productName, imageUrl, groupId, groupName, requestedQty, approvedQty, status)

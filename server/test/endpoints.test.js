@@ -3,6 +3,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createTempDatabase, call, callOk } from './helpers/apiHarness.js';
+import { ADJUSTMENT_LABEL } from '../utils/projects.js';
 
 const temp = createTempDatabase('endpoints');
 const { default: db } = await import('../db.js');
@@ -12,6 +13,7 @@ const rooms = await import('../controllers/roomController.js');
 const storage = await import('../controllers/storageItemController.js');
 const transactions = await import('../controllers/transactionController.js');
 const reports = await import('../controllers/reportController.js');
+const projects = await import('../controllers/projectController.js');
 const push = await import('../push.js');
 const initialStock = await import('../utils/initialStockHistory.js');
 
@@ -419,6 +421,161 @@ test('แจ้งเตือนตามบทบาท: ส่งเฉพา
 
   const adminOnly = await push.sendPushToRoles(['Admin'], { title: 't', body: 'b', url: '/' });
   assert.equal(adminOnly.users, 1, 'ระบุบทบาทเดียวต้องได้เฉพาะบทบาทนั้น');
+});
+
+
+// ---- เปลี่ยนชื่อโปรเจกต์ ----
+// ด่านสำคัญของชุดนี้: โปรเจกต์ถูกอ้างสองแบบที่ขยับไม่พร้อมกัน — โซนจัดเตรียมผูกด้วย id
+// แต่ใบเบิก/ประวัติถือสำเนาข้อความชื่อ ถ้าเปลี่ยนชื่อแล้วประวัติไม่ตาม โควตาโซนจะคำนวณผิดทันที
+test('เปลี่ยนชื่อโปรเจกต์: ใบเบิกและประวัติตามไปทั้งหมด โควตาพื้นที่จัดเตรียมไม่เพี้ยน', async () => {
+  const OLD = 'โครงการทดสอบ';
+  const NEW = 'โครงการเปลี่ยนชื่อแล้ว';
+
+  const made3 = await callOk('createProduct', products.createProduct, {
+    body: { name: 'สินค้าเปลี่ยนชื่อ', groupId: '01', groupName: 'ทดสอบ', unit: 'ชิ้น', latestCost: 5, initialStock: 20, rackId: shelf.rack.id, storageLevel: 3 }
+  });
+  const sku3 = made3.sku;
+  await callOk('moveItemQuantity → พื้นที่จัดเตรียม', storage.moveItemQuantity, {
+    body: { sku: sku3, from: { rackId: shelf.rack.id, storageLevel: 3 }, to: { rackId: stagingZone.rack.id, storageLevel: 1 }, quantity: 10 }
+  });
+
+  // อนุมัติแล้วยังไม่มารับ = ยอดจองที่ต้องถูกหักออกจากโควตาโซน
+  const req = await callOk('createOutboundRequest', transactions.createOutboundRequest, {
+    body: { project: OLD, items: [{ productId: sku3, quantity: 4 }] },
+    user: { username: 'tester', role: 'Operator' }
+  });
+  const txRow = db.prepare('SELECT id FROM wms_transactions WHERE transactionId = ?').get(req.transactionId);
+  await callOk('resolveTransaction', transactions.resolveTransaction, {
+    params: { id: String(txRow.id) },
+    body: { action: 'APPROVE', updatedItems: [{ productId: sku3, approvedQty: 4 }] }
+  });
+
+  const availableFor = async (name) => {
+    const list = await callOk('getProducts', products.getProducts, { query: { limit: '500', project: name } });
+    return list.products.find((row) => row.sku === sku3);
+  };
+  const before = await availableFor(OLD);
+  assert.equal(before.availableSource, 'staging', 'โครงการที่มีโซนต้องคิดโควตาจากโซน');
+  assert.equal(before.available, 6, 'โซนมี 10 อนุมัติค้างไว้ 4 จึงเบิกได้อีก 6');
+
+  // ใบปรับยอดใช้ช่อง project เดียวกันเก็บป้ายระบบ ต้องไม่โดนลากไปด้วยตอนเปลี่ยนชื่อ
+  await callOk('adjustStock', transactions.adjustStock, {
+    body: { sku: sku3, countedQty: 21, note: 'นับจริงได้มากกว่า' }
+  });
+  const adjustBefore = db.prepare('SELECT COUNT(*) c FROM wms_transactions WHERE project = ?').get(ADJUSTMENT_LABEL).c;
+  assert.ok(adjustBefore > 0, 'ต้องมีใบปรับยอดไว้ให้ตรวจ');
+
+  const txBefore = db.prepare('SELECT COUNT(*) c FROM wms_transactions WHERE project = ?').get(OLD).c;
+  const outBefore = db.prepare('SELECT COUNT(*) c FROM stock_out WHERE project = ?').get(OLD).c;
+  const renamed = await callOk('renameProject', projects.renameProject, {
+    params: { id: String(project.lastInsertRowid) }, body: { name: NEW }
+  });
+
+  assert.equal(renamed.updated.transactions, txBefore, 'ใบเบิกทุกใบของชื่อเดิมต้องถูกแก้ตาม');
+  assert.equal(renamed.updated.stockOut, outBefore, 'ประวัติเบิกออกต้องถูกแก้ตามครบ');
+  assert.equal(db.prepare('SELECT COUNT(*) c FROM wms_transactions WHERE project = ?').get(OLD).c, 0, 'ต้องไม่เหลือใบที่ค้างชื่อเก่า');
+  assert.equal(db.prepare('SELECT COUNT(*) c FROM stock_out WHERE project = ?').get(OLD).c, 0, 'ประวัติเบิกออกต้องไม่ค้างชื่อเก่า');
+  assert.equal(db.prepare('SELECT COUNT(*) c FROM stock_in WHERE project = ?').get(OLD).c, 0, 'ประวัติรับเข้าต้องไม่ค้างชื่อเก่า');
+  assert.equal(
+    db.prepare('SELECT COUNT(*) c FROM wms_transactions WHERE project = ?').get(ADJUSTMENT_LABEL).c,
+    adjustBefore,
+    'ป้ายระบบต้องไม่ถูกแตะ (เทียบชื่อแบบตรงเป๊ะ ไม่ใช่ LIKE)'
+  );
+
+  const after = await availableFor(NEW);
+  assert.equal(after.availableSource, 'staging', 'โซนต้องยังผูกกับโครงการเดิม เพราะผูกด้วย id');
+  assert.equal(after.available, before.available, 'ยอดที่อนุมัติค้างไว้ต้องยังถูกหักออกจากโควตาเหมือนเดิม');
+  assert.equal(await availableFor(OLD).then((row) => row.availableSource), 'free', 'ชื่อเก่าต้องไม่เหลือโควตาโซนค้างอยู่');
+});
+
+test('เปลี่ยนชื่อโปรเจกต์: กันชื่อซ้ำ กันชนป้ายระบบ แต่แก้ตัวสะกดของตัวเองได้', async () => {
+  const target = db.prepare("INSERT INTO projects (name, norm) VALUES ('งานสีเขียว', 'สีเขียว')").run();
+  db.prepare("INSERT INTO projects (name, norm) VALUES ('งานสีแดง', 'สีแดง')").run();
+  const rename = (name) => call(projects.renameProject, { params: { id: String(target.lastInsertRowid) }, body: { name } });
+
+  const dup = await rename('สีแดง');
+  assert.equal(dup.success, false, 'ชื่อที่ normalize แล้วซ้ำกับโปรเจกต์อื่นต้องถูกปฏิเสธ');
+  assert.equal(dup.status, 409);
+
+  const reserved = await rename(ADJUSTMENT_LABEL);
+  assert.equal(reserved.success, false, 'ชื่อที่ชนป้ายระบบต้องถูกปฏิเสธ');
+
+  const blank = await rename('   ');
+  assert.equal(blank.success, false, 'ชื่อว่างต้องถูกปฏิเสธ');
+
+  // norm ไม่เปลี่ยน (ยังเป็น 'สีเขียว') — ต้องผ่าน ไม่ใช่ติดด่านชื่อซ้ำกับตัวเอง
+  const ok = await callOk('renameProject (แก้ตัวสะกดตัวเอง)', projects.renameProject, {
+    params: { id: String(target.lastInsertRowid) }, body: { name: 'งาน สีเขียว' }
+  });
+  assert.equal(ok.project.name, 'งาน สีเขียว');
+  assert.equal(db.prepare('SELECT name FROM projects WHERE id = ?').get(target.lastInsertRowid).name, 'งาน สีเขียว');
+});
+
+
+// โหมดเก็บประวัติ: ใช้ตอนชื่อใหม่คืองานคนละรอบ (งานเดิมจบแล้ว ลูกค้าเจ้าเดิมซื้อต่อ)
+// ใบที่ปิดจบต้องคงชื่อยุคนั้นไว้ แต่ใบที่ยังเดินอยู่ต้องเปลี่ยนตาม ไม่งั้นโควตาโซนกับการหยิบของเพี้ยน
+test('เปลี่ยนชื่อโปรเจกต์แบบเก็บประวัติ: ใบที่ปิดจบคงชื่อเดิม ใบที่ยังไม่ปิดเปลี่ยนตาม', async () => {
+  const OLD = 'เฟสหนึ่ง';
+  const NEW = 'เฟสสอง';
+  const phase = db.prepare('INSERT INTO projects (name, norm) VALUES (?, ?)').run(OLD, OLD);
+  const zone = await callOk('addRack (โซนของเฟสนี้)', racks.addRack, {
+    body: { name: 'จัดเตรียมเฟส', isFloor: true, projectId: phase.lastInsertRowid, roomId: room.room.id, posX: 300, posY: 300 }
+  });
+  const made4 = await callOk('createProduct', products.createProduct, {
+    body: { name: 'สินค้าเฟส', groupId: '01', groupName: 'ทดสอบ', unit: 'ชิ้น', latestCost: 8, initialStock: 20, rackId: shelf.rack.id, storageLevel: 1 }
+  });
+  const sku4 = made4.sku;
+  await callOk('moveItemQuantity → โซนของเฟส', storage.moveItemQuantity, {
+    body: { sku: sku4, from: { rackId: shelf.rack.id, storageLevel: 1 }, to: { rackId: zone.rack.id, storageLevel: 1 }, quantity: 10 }
+  });
+
+  const submit = async (quantity) => {
+    const req = await callOk('createOutboundRequest', transactions.createOutboundRequest, {
+      body: { project: OLD, items: [{ productId: sku4, quantity }] },
+      user: { username: 'tester', role: 'Operator' }
+    });
+    return db.prepare('SELECT id FROM wms_transactions WHERE transactionId = ?').get(req.transactionId).id;
+  };
+  const approve = (txId, qty) => callOk('resolveTransaction', transactions.resolveTransaction, {
+    params: { id: String(txId) }, body: { action: 'APPROVE', updatedItems: [{ productId: sku4, approvedQty: qty }] }
+  });
+
+  const closed = await submit(3);        // ปิดจบ: อนุมัติแล้วมารับของไปแล้ว
+  await approve(closed, 3);
+  await callOk('markPickedUp', transactions.markPickedUp, { params: { id: String(closed) } });
+
+  const waiting = await submit(2);       // ยังเดินอยู่: อนุมัติแล้วรอมารับ
+  await approve(waiting, 2);
+  const pending = await submit(1);       // ยังเดินอยู่: ยังไม่อนุมัติ
+
+  const availableFor = async (name) => {
+    const list = await callOk('getProducts', products.getProducts, { query: { limit: '500', project: name } });
+    return list.products.find((row) => row.sku === sku4);
+  };
+  const before = await availableFor(OLD);
+  assert.equal(before.available, 5, 'โซนเหลือ 7 หลังหยิบไป 3 และมีใบรออยู่ 2 จึงเบิกได้อีก 5');
+
+  const renamed = await callOk('renameProject (เก็บประวัติ)', projects.renameProject, {
+    params: { id: String(phase.lastInsertRowid) }, body: { name: NEW, keepHistory: true }
+  });
+  assert.equal(renamed.updated.transactions, 2, 'ต้องแก้เฉพาะใบที่ยังเดินอยู่ 2 ใบ');
+  assert.equal(renamed.updated.kept, 1, 'ใบที่ปิดจบแล้วต้องถูกทิ้งไว้ 1 ใบ');
+  assert.equal(renamed.updated.stockOut, 0, 'โหมดนี้ต้องไม่แตะประวัติเบิกออกเลย');
+
+  const projectOf = (txId) => db.prepare('SELECT project FROM wms_transactions WHERE id = ?').get(txId).project;
+  assert.equal(projectOf(closed), OLD, 'ใบที่มารับของไปแล้วต้องคงชื่อยุคเดิม');
+  assert.equal(projectOf(waiting), NEW, 'ใบที่อนุมัติแล้วรอมารับต้องเปลี่ยนตาม');
+  assert.equal(projectOf(pending), NEW, 'ใบที่ยังไม่อนุมัติต้องเปลี่ยนตาม');
+  assert.equal(db.prepare('SELECT COUNT(*) c FROM stock_out WHERE project = ?').get(OLD).c, 1, 'ประวัติเบิกออกของยุคเดิมต้องอยู่ครบ');
+
+  // ด่านสำคัญ: โควตาต้องคิดได้เหมือนเดิม ยอดที่รออยู่ 2 ต้องยังถูกหัก ไม่ใช่ปล่อยให้เบิกซ้ำได้ 7
+  const after = await availableFor(NEW);
+  assert.equal(after.availableSource, 'staging', 'โซนต้องยังผูกกับโปรเจกต์เดิม');
+  assert.equal(after.available, before.available, 'ยอดที่อนุมัติค้างไว้ต้องยังถูกหักออกจากโควตา');
+
+  // และอนุมัติใบที่ยังค้างต่อได้จริง ไม่ใช่แค่ตัวเลขสวย
+  await approve(pending, 1);
+  assert.equal((await availableFor(NEW)).available, 4, 'อนุมัติเพิ่ม 1 แล้วโควตาต้องเหลือ 4');
 });
 
 test.after(() => temp.cleanup(db));
