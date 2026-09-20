@@ -74,6 +74,10 @@ export const getProducts = (req, res) => {
     const lowStock = req.query.lowStock === 'true';         // แสดงเฉพาะสินค้าสต็อกต่ำ/หมด
     const discrepancy = req.query.discrepancy === 'true';   // แสดงเฉพาะสินค้าที่ยอดคลาดเคลื่อน (ติดลบ = เป็นไปไม่ได้ทางกายภาพ)
     const newToday = req.query.newToday === 'true';         // แสดงเฉพาะสินค้าที่เพิ่มเข้าระบบวันนี้ (ไว้ตรวจงานประจำวัน)
+    // เลือกย้อนวันได้ — รับเฉพาะ YYYY-MM-DD ถ้าเพี้ยนให้ตกกลับไปเป็น "วันนี้" ไม่ใช่คืนรายการเปล่าแบบไม่บอกสาเหตุ
+    const newDateRaw = String(req.query.newDate || '').trim();
+    const newDate = /^\d{4}-\d{2}-\d{2}$/.test(newDateRaw) ? newDateRaw : '';
+    const newItems = newToday || Boolean(newDate);
     const group = String(req.query.group || '').trim();
 
     // กรองสถานะใช้งานทั้งหมดที่ฝั่ง server เพื่อให้แบ่งหน้าถูกต้อง (ไม่งั้นกรอง client จะเห็นแค่หน้าปัจจุบัน)
@@ -97,8 +101,15 @@ export const getProducts = (req, res) => {
 
     // created_at มีสองรูปแบบปนกัน (ISO จากหน้าเว็บ / "YYYY-MM-DD HH:MM:SS" จาก CURRENT_TIMESTAMP) และเป็นเวลา UTC ทั้งคู่
     // date(..., 'localtime') แปลงเป็นวันที่ตามเวลาเครื่องได้ถูกทั้งสองแบบ — สินค้าที่เพิ่มตอนเช้ามืดจะไม่ตกไปเป็นเมื่อวาน
-    if (newToday) {
-      whereParts.push("date(i.created_at, 'localtime') = date('now', 'localtime')");
+    if (newItems) {
+      // เทียบสตริงวันที่ตรงๆ — ค่าจาก <input type="date"> เป็นวันที่ตามปฏิทินเครื่องอยู่แล้ว
+      // ถ้าเอาไปเข้า date(@newDate, 'localtime') อีกทีจะโดนเลื่อนโซนเวลาซ้ำสอง แล้วของช่วงเช้ามืดหลุดไปอีกวัน
+      if (newDate) {
+        whereParts.push("date(i.created_at, 'localtime') = @newDate");
+        params.newDate = newDate;
+      } else {
+        whereParts.push("date(i.created_at, 'localtime') = date('now', 'localtime')");
+      }
     }
 
     if (search) {
@@ -146,7 +157,7 @@ export const getProducts = (req, res) => {
       LEFT JOIN rooms rm ON rm.id = i.primary_room_id AND rm.deleted_at IS NULL
       LEFT JOIN item_reserved res ON res.item_id = i.item_id
       WHERE ${whereSql}
-      ORDER BY ${newToday ? 'julianday(i.created_at) DESC, ' : ''}i.item_name COLLATE NOCASE ASC
+      ORDER BY ${newItems ? 'julianday(i.created_at) DESC, ' : ''}i.item_name COLLATE NOCASE ASC
       LIMIT @limit OFFSET @offset
     `).all({ ...params, limit, offset });
 

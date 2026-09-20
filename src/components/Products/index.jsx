@@ -17,6 +17,17 @@ import { useBodyScrollLock } from '../../utils/useBodyScrollLock';
 
 const nf = (n) => Number(n || 0).toLocaleString();
 
+// วันนี้แบบ YYYY-MM-DD ตามปฏิทินเครื่อง — toISOString() ใช้ไม่ได้ เพราะแปลงเป็น UTC
+// แล้วช่วงเย็นของไทย (UTC+7) จะกลายเป็นวันพรุ่งนี้ ตัวกรอง "รายการใหม่" เลยว่างทั้งที่เพิ่งเพิ่มของไป
+const todayLocal = () => {
+  const now = new Date();
+  const pad = (n) => String(n).padStart(2, '0');
+  return `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}`;
+};
+
+// "2026-09-20" → "20/9/2569" — ต่อท้าย T00:00:00 ให้อ่านเป็นเวลาเครื่อง ไม่ใช่ UTC (ไม่งั้นเพี้ยนไปวันก่อนหน้า)
+const thaiDate = (ymd) => new Date(`${ymd}T00:00:00`).toLocaleDateString('th-TH');
+
 const emptyInboundForm = {
   sku: '',
   name: '',
@@ -60,6 +71,7 @@ export default function Products() {
   const [showInactive, setShowInactive] = useState(false);
   const [discrepancyOnly, setDiscrepancyOnly] = useState(false); // แสดงเฉพาะสินค้ายอดคลาดเคลื่อน (ติดลบ)
   const [newTodayOnly, setNewTodayOnly] = useState(false);       // แสดงเฉพาะสินค้าที่เพิ่มวันนี้ (ไว้ตรวจข้อมูลประจำวัน)
+  const [newDate, setNewDate] = useState(todayLocal);            // วันที่ของตัวกรองด้านบน — ย้อนไปดูวันก่อนๆ ได้
   const [scanOpen, setScanOpen] = useState(false);
   const searchInputRef = useRef(null);
 
@@ -117,7 +129,10 @@ export default function Products() {
       if (showInactive) query.set('onlyInactive', 'true'); // มุมมองที่ปิดใช้งาน = แสดงเฉพาะสินค้าที่ archive ไว้
       if (lowStockOnly) query.set('lowStock', 'true');
       if (discrepancyOnly) query.set('discrepancy', 'true');
-      if (newTodayOnly) query.set('newToday', 'true');
+      if (newTodayOnly) {
+        query.set('newToday', 'true');
+        if (newDate) query.set('newDate', newDate); // ไม่ส่ง = ให้ server ถือว่าวันนี้
+      }
       const json = await fetchApi(`/api/products?${query.toString()}`);
       // ถ้ามีคำขอใหม่กว่ายิงตามมาแล้ว ให้ทิ้ง response เก่านี้ ไม่เอามาอัปเดตจอ
       if (reqId !== reqIdRef.current) return;
@@ -131,10 +146,10 @@ export default function Products() {
     } finally {
       if (reqId === reqIdRef.current && !silent) setLoading(false);
     }
-  }, [searchTerm, groupFilter, showInactive, lowStockOnly, discrepancyOnly, newTodayOnly, page]);
+  }, [searchTerm, groupFilter, showInactive, lowStockOnly, discrepancyOnly, newTodayOnly, newDate, page]);
 
   // เปลี่ยนตัวกรอง → กลับไปหน้า 1 เสมอ
-  useEffect(() => { setPage(1); }, [searchTerm, groupFilter, showInactive, lowStockOnly, discrepancyOnly, newTodayOnly]);
+  useEffect(() => { setPage(1); }, [searchTerm, groupFilter, showInactive, lowStockOnly, discrepancyOnly, newTodayOnly, newDate]);
 
   useEffect(() => {
     fetchApi('/api/product-groups')
@@ -566,7 +581,9 @@ export default function Products() {
   const toggleNewToday = () => {
     const next = !newTodayOnly;
     setNewTodayOnly(next);
-    if (next) { clearLowStock(); setDiscrepancyOnly(false); setShowInactive(false); }
+    // รีเซ็ตวันตอน "เปิด" ไม่ใช่ตอนปิด — ปุ่มกรองอีก 3 ตัวปิดตัวนี้เองโดยไม่ผ่านฟังก์ชันนี้
+    // ถ้าไปดีดตอนปิด สลับไปสต็อกต่ำแล้วกลับมาจะค้างอยู่ที่วันเก่าโดยไม่รู้ตัว
+    if (next) { clearLowStock(); setDiscrepancyOnly(false); setShowInactive(false); setNewDate(todayLocal()); }
   };
 
   // ค้นหา/กรองสถานะ/สต็อกต่ำ/แบ่งหน้า ทำที่ server แล้ว — แสดงตามที่ได้มาตรงๆ
@@ -619,7 +636,7 @@ export default function Products() {
           <input type="checkbox" className="toggle toggle-sm" checked={showInactive} onChange={toggleShowInactive} />
           <span className="label-text text-sm font-medium">ที่ปิดใช้งาน</span>
         </label>
-        <label className="label cursor-pointer gap-2 py-0" title="สินค้าที่เพิ่มเข้าระบบวันนี้ ตัวล่าสุดขึ้นก่อน">
+        <label className="label cursor-pointer gap-2 py-0" title="สินค้าที่เพิ่มเข้าระบบในวันที่เลือก ตัวล่าสุดขึ้นก่อน">
           <input type="checkbox" className="toggle toggle-sm toggle-info" checked={newTodayOnly} onChange={toggleNewToday} />
           <span className="label-text text-sm font-medium">รายการใหม่</span>
         </label>
@@ -630,7 +647,21 @@ export default function Products() {
           <span className="badge badge-warning badge-outline gap-1">ติดลบ {totalItems.toLocaleString()} รายการ</span>
         )}
         {newTodayOnly && (
-          <span className="badge badge-info badge-outline gap-1">เพิ่มวันนี้ {totalItems.toLocaleString()} รายการ</span>
+          <div className="flex flex-wrap items-center gap-2">
+            {/* เคลียร์ช่องทิ้ง (ปุ่มกากบาทของเบราว์เซอร์) = กลับมาเป็นวันนี้ ไม่ใช่กรองด้วยค่าว่างจนไม่เหลืออะไร */}
+            <input
+              type="date"
+              className="input input-bordered input-sm"
+              value={newDate}
+              max={todayLocal()}
+              onChange={(event) => setNewDate(event.target.value || todayLocal())}
+              title="เลือกวันที่เพิ่มเข้าระบบ"
+              aria-label="วันที่เพิ่มเข้าระบบ"
+            />
+            <span className="badge badge-info badge-outline gap-1">
+              {newDate === todayLocal() ? 'เพิ่มวันนี้' : `เพิ่ม ${thaiDate(newDate)}`} {totalItems.toLocaleString()} รายการ
+            </span>
+          </div>
         )}
       </div>
 

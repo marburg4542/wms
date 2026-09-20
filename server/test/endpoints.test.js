@@ -403,6 +403,42 @@ test('ตัวกรองรายการใหม่: แสดงเฉพ
   assert.equal(list.totalItems, skus.length, 'จำนวนรวมต้องนับตามตัวกรองเดียวกัน');
 });
 
+test('ตัวกรองรายการใหม่: เลือกย้อนวันได้ และของวันนั้นยังเรียงตัวล่าสุดขึ้นก่อน', async () => {
+  const early = await callOk('createProduct', products.createProduct, {
+    body: { name: 'ของเมื่อวาน ชิ้นเช้า', groupId: '01', groupName: 'ทดสอบ', unit: 'ชิ้น' }
+  });
+  const late = await callOk('createProduct', products.createProduct, {
+    body: { name: 'ของเมื่อวาน ชิ้นบ่าย', groupId: '01', groupName: 'ทดสอบ', unit: 'ชิ้น' }
+  });
+  const today = await callOk('createProduct', products.createProduct, {
+    body: { name: 'ของวันนี้', groupId: '01', groupName: 'ทดสอบ', unit: 'ชิ้น' }
+  });
+
+  // ปักเวลาเป็น "เช้า/บ่ายของเมื่อวาน ตามเวลาเครื่อง" แล้วให้ SQLite แปลงกลับเป็น UTC ก่อนเก็บ (modifier 'utc')
+  // ถ้าใช้ datetime('now','-1 day','-1 hour') เฉยๆ เทสต์จะแดงเองตอนรันช่วงเที่ยงคืน–ตีหนึ่ง เพราะ -1 ชม. ข้ามไปอีกวัน
+  const yesterday = db.prepare("SELECT date('now', '-1 day', 'localtime') AS d").get().d;
+  const backdate = db.prepare("UPDATE items SET created_at = datetime(? || ' ' || ?, 'utc') WHERE item_id = ?");
+  backdate.run(yesterday, '09:00:00', early.sku);
+  backdate.run(yesterday, '15:00:00', late.sku);
+
+  const list = await callOk('getProducts', products.getProducts, {
+    query: { limit: '500', newToday: 'true', newDate: yesterday }
+  });
+  const skus = list.products.map((item) => item.sku);
+  assert.ok(skus.includes(early.sku) && skus.includes(late.sku), 'ของที่เพิ่มในวันที่เลือกต้องมาครบ');
+  assert.ok(!skus.includes(today.sku), 'ของวันอื่นต้องไม่ติดมาด้วย');
+  assert.ok(skus.indexOf(late.sku) < skus.indexOf(early.sku), 'ในวันเดียวกันตัวล่าสุดต้องขึ้นก่อน');
+  assert.equal(list.totalItems, skus.length, 'ตัวเลขบนป้ายต้องนับด้วยเงื่อนไขเดียวกับรายการที่แสดง');
+
+  // วันที่รูปแบบเพี้ยน → ตกกลับไปเป็น "วันนี้" ไม่ใช่คืนรายการเปล่าแบบไม่บอกสาเหตุ
+  const fallback = await callOk('getProducts', products.getProducts, {
+    query: { limit: '500', newToday: 'true', newDate: '20 ก.ย. 2569' }
+  });
+  const fallbackSkus = fallback.products.map((item) => item.sku);
+  assert.ok(fallbackSkus.includes(today.sku), 'รูปแบบวันที่ไม่ถูกต้องต้องกลับไปแสดงของวันนี้');
+  assert.ok(!fallbackSkus.includes(late.sku), 'และต้องไม่เผลอแสดงของวันที่พิมพ์เพี้ยนนั้น');
+});
+
 // ---- เลือกผู้รับแจ้งเตือนตามบทบาท ----
 test('แจ้งเตือนตามบทบาท: ส่งเฉพาะบัญชีที่ใช้งานอยู่ และไม่ส่งกลับหาคนที่เป็นต้นเหตุ', async () => {
   const add = db.prepare("INSERT INTO app_users (username, email, password, role, status) VALUES (?, ?, 'x', ?, ?)");
