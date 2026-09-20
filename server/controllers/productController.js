@@ -1,5 +1,5 @@
 import db, { logAudit } from '../db.js';
-import { retargetSku } from '../utils/skuRetarget.js';
+import { planSkuForGroup, retargetSku } from '../utils/skuRetarget.js';
 import { LocationError, setLocationQuantity } from '../utils/itemLocations.js';
 import { broadcast } from '../events.js';
 import { availableForProject, readItemStockContext } from '../utils/projectStock.js';
@@ -316,6 +316,27 @@ export const getNextSku = (req, res) => {
   }
 };
 
+// รหัสใหม่ที่จะได้ถ้าย้ายสินค้าตัวนี้ไปหมวดอื่น — ให้หน้าจอเอาไปบอกผู้ใช้ก่อนกดยืนยัน
+// อ่านอย่างเดียว ไม่เขียนอะไร และใช้ตัวคิดเลขตัวเดียวกับตอนบันทึกจริง จะได้ไม่มีสองมาตรฐาน
+export const previewSkuForGroup = (req, res) => {
+  try {
+    const sku = normalizeSku(req.params.id);
+    const item = db.prepare('SELECT item_id, item_seq, group_id FROM items WHERE item_id = ?').get(sku);
+    if (!item) return res.status(404).json({ success: false, message: 'ไม่พบสินค้า' });
+
+    const groupId = String(req.query.group || '').trim();
+    if (!/^\d{2}$/.test(groupId)) return res.status(400).json({ success: false, message: 'รหัสหมวดไม่ถูกต้อง' });
+    if (groupId === item.group_id) return res.json({ success: true, changed: false, from: sku, sku });
+
+    const plan = planSkuForGroup(db, { itemSeq: item.item_seq, groupId });
+    if (!plan) return res.status(400).json({ success: false, message: `หมวด ${groupId} มีสินค้าครบ 999 รายการแล้ว ย้ายเข้าไปเพิ่มไม่ได้` });
+    res.json({ success: true, changed: true, from: sku, sku: plan.sku });
+  } catch (error) {
+    console.error('previewSkuForGroup Error:', error);
+    res.status(500).json({ success: false, message: 'Database error' });
+  }
+};
+
 export const updateProduct = (req, res) => {
   try {
     const sku = normalizeSku(req.params.id);
@@ -338,10 +359,24 @@ export const updateProduct = (req, res) => {
     // ตำแหน่งจัดเก็บไม่รับจากฟอร์มนี้แล้ว — items.rack_id เป็นค่าที่ derive มาจาก item_locations
     // ถ้าปล่อยให้ฟอร์มเขียนทับ ผังคลังจะไม่รู้เรื่องด้วย แล้วสินค้าจะค้างอยู่หน้า "ยังไม่ระบุตำแหน่ง"
     // ส่ง sku ใหม่มา = ขอเปลี่ยน SKU (ถ้าไม่ส่งหรือส่งค่าเดิม จะไม่แตะ)
-    const requestedSku = normalizeSku(req.body.sku || sku);
+    let requestedSku = normalizeSku(req.body.sku || sku);
+    let plannedSeq = null;
 
     if (!name) {
       return res.status(400).json({ success: false, message: 'กรุณาระบุชื่อสินค้า' });
+    }
+
+    // ย้ายหมวด → รหัสต้องตามหมวดใหม่เสมอ และให้ระบบเลือกเบอร์ให้เอง ไม่รับเบอร์ที่คนพิมพ์มาพร้อมกัน
+    // (รับพร้อมกันเมื่อไรจะได้รหัสที่ขึ้นต้นผิดหมวดหรือชนของเดิมง่ายมาก — อยากได้เบอร์เจาะจง
+    //  ให้ย้ายหมวดก่อน แล้วค่อยแก้เบอร์อีกครั้งตอนอยู่หมวดใหม่แล้ว)
+    const groupChanged = groupId !== existing.group_id;
+    if (groupChanged) {
+      const plan = planSkuForGroup(db, { itemSeq: existing.item_seq, groupId });
+      if (!plan) {
+        return res.status(400).json({ success: false, message: `หมวด ${groupId} มีสินค้าครบ 999 รายการแล้ว ย้ายเข้าไปเพิ่มไม่ได้` });
+      }
+      requestedSku = plan.sku;
+      plannedSeq = plan.seq;
     }
 
     if (requestedSku !== sku) {
@@ -353,6 +388,18 @@ export const updateProduct = (req, res) => {
       const dup = db.prepare('SELECT item_id FROM items WHERE item_id = ?').get(requestedSku);
       if (dup) {
         return res.status(409).json({ success: false, message: 'SKU นี้มีอยู่ในระบบแล้ว' });
+      }
+
+      // เปลี่ยนรหัส = ป้าย QR ที่ติดกล่อง/ชั้นวางไว้แล้วสแกนไม่เจอทันที
+      // ของจริงมีคนเดินไปหยิบตามป้าย เตือนเฉยๆ ไม่พอ ต้องให้กดยืนยันว่ารู้ตัวก่อนถึงจะเปลี่ยนให้
+      if (req.body.confirmSkuChange !== true) {
+        return res.status(409).json({
+          success: false,
+          code: 'SKU_CHANGE_CONFIRM',
+          from: sku,
+          to: requestedSku,
+          message: `รหัสสินค้าจะเปลี่ยนจาก ${sku} เป็น ${requestedSku} — ป้าย QR เดิมจะสแกนไม่เจอ ต้องพิมพ์ป้ายใหม่`
+        });
       }
     }
 
@@ -369,8 +416,10 @@ export const updateProduct = (req, res) => {
         // item_id เป็น primary key ที่ stock_in/stock_out/product_settings/item_locations/ใบเบิกอ้างถึง
         // เปลี่ยน item_id ในที่เดียว แล้ว retargetSku ลากตารางลูกทุกตารางตามไป
         // (รวม item_locations — ถ้าลืม ตำแหน่งจัดเก็บจะค้างกับรหัสเก่าแล้วสินค้าจะกลับไปอยู่หน้า "ยังไม่ระบุตำแหน่ง")
-        retargetSku(db, sku, requestedSku, requestedSku.slice(-3).padStart(3, '0'));
-        logAudit(req.user?.username, 'product.rename_sku', 'product', requestedSku, { from: sku });
+        // ย้ายหมวดด้วย → ส่ง group ไปให้ชื่อหมวดที่ค้างอยู่ในใบเบิกเก่าอัปเดตตามในคราวเดียว
+        retargetSku(db, sku, requestedSku, plannedSeq ?? requestedSku.slice(-3).padStart(3, '0'),
+          groupChanged ? { id: groupId, name: groupName } : null);
+        logAudit(req.user?.username, 'product.rename_sku', 'product', requestedSku, { from: sku, groupChanged });
       }
 
       db.prepare(`
@@ -400,7 +449,13 @@ export const updateProduct = (req, res) => {
     }
 
     broadcast('products');
-    return res.json({ success: true, message: 'อัปเดตสินค้าเรียบร้อย' });
+    // คืนรหัสจริงที่ได้กลับไปด้วย — เบอร์ที่หน้าจอทายไว้ตอนถามยืนยันอาจโดนคนอื่นตัดหน้าไปก่อน
+    return res.json({
+      success: true,
+      sku: requestedSku,
+      skuChanged,
+      message: skuChanged ? `อัปเดตสินค้าแล้ว — รหัสใหม่คือ ${requestedSku}` : 'อัปเดตสินค้าเรียบร้อย'
+    });
   } catch (error) {
     console.error('updateProduct Error:', error);
     res.status(500).json({ success: false, message: 'Database error' });

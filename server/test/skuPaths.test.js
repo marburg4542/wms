@@ -9,7 +9,7 @@
 // เพิ่มตารางใหม่เข้ารายชื่อเมื่อไร ทุกทางจะถูกตรวจเพิ่มให้เองโดยไม่ต้องมาแก้เทสต์
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { createTempDatabase, callOk } from './helpers/apiHarness.js';
+import { createTempDatabase, call, callOk } from './helpers/apiHarness.js';
 import { SKU_CHILD_TABLES } from '../utils/skuRetarget.js';
 
 const temp = createTempDatabase('sku-paths');
@@ -68,9 +68,16 @@ const assertMoved = (label, oldSku, newSku) => {
 test('แก้รหัสสินค้าในหน้าแก้ไข: สินค้าที่มีประวัติแล้วต้องเปลี่ยนรหัสได้ ไม่ใช่ Database error', async () => {
   const name = 'สินค้าแก้รหัสเอง';
   const oldSku = await seedProduct('11', 'หมวดแก้รหัส', name);
-  await callOk('updateProduct', products.updateProduct, {
+  // พิมพ์รหัสใหม่เองก็ต้องผ่านด่านยืนยันเหมือนกัน เพราะป้าย QR เดิมใช้ไม่ได้ทั้งสองทาง
+  const blocked = await call(products.updateProduct, {
     params: { id: oldSku },
     body: { sku: '11900', name, groupId: '11', groupName: 'หมวดแก้รหัส' }
+  });
+  assert.equal(blocked.code, 'SKU_CHANGE_CONFIRM', 'ต้องถามยืนยันก่อนเปลี่ยนรหัส');
+
+  await callOk('updateProduct', products.updateProduct, {
+    params: { id: oldSku },
+    body: { sku: '11900', name, groupId: '11', groupName: 'หมวดแก้รหัส', confirmSkuChange: true }
   });
   assertMoved('แก้รหัสเอง', oldSku, '11900');
 });
@@ -102,6 +109,54 @@ test('จัดเรียงเลขรหัสในหมวด: ตำแ
   db.pragma('foreign_keys = ON');
   await callOk('resequenceSkus', categories.resequenceSkus, { body: { groupId: '14' } });
   assertMoved('จัดเรียงเลขในหมวด', '14500', skuOf(name));
+});
+
+
+test('ย้ายสินค้าไปหมวดอื่น: เก็บเลขเดิมไว้ถ้าหมวดปลายทางยังว่างเลขนั้น', async () => {
+  const name = 'สินค้าย้ายหมวดเลขว่าง';
+  const oldSku = await seedProduct('31', 'หมวดต้นทางย้าย', name);
+  assert.equal(oldSku, '31001');
+
+  // ยังไม่ยืนยัน = ต้องไม่เปลี่ยนอะไรเลย แค่บอกว่ารหัสจะกลายเป็นอะไร
+  const blocked = await call(products.updateProduct, {
+    params: { id: oldSku }, body: { name, groupId: '32', groupName: 'หมวดปลายทางว่าง' }
+  });
+  assert.equal(blocked.success, false, 'ต้องถามยืนยันก่อน ห้ามเปลี่ยนทันที');
+  assert.equal(blocked.code, 'SKU_CHANGE_CONFIRM');
+  assert.equal(blocked.to, '32001', 'เลขเดิม 001 ยังว่างที่หมวดปลายทาง จึงต้องได้เลขเดิม');
+  assert.equal(db.prepare('SELECT item_id FROM items WHERE item_name = ?').get(name).item_id, oldSku, 'ยังไม่ยืนยันแล้วรหัสต้องไม่ขยับ');
+
+  // ถามล่วงหน้าต้องได้คำตอบเดียวกับตอนบันทึกจริง ไม่งั้นหน้าจอจะบอกเบอร์ผิด
+  const preview = await callOk('previewSkuForGroup', products.previewSkuForGroup, {
+    params: { id: oldSku }, query: { group: '32' }
+  });
+  assert.equal(preview.sku, '32001');
+  assert.equal(preview.changed, true);
+
+  const saved = await callOk('updateProduct', products.updateProduct, {
+    params: { id: oldSku }, body: { name, groupId: '32', groupName: 'หมวดปลายทางว่าง', confirmSkuChange: true }
+  });
+  assert.equal(saved.sku, '32001', 'ต้องคืนรหัสจริงที่ได้กลับไปให้หน้าจอ');
+  assertMoved('ย้ายหมวด', oldSku, '32001');
+  assert.equal(db.prepare('SELECT group_id FROM items WHERE item_id = ?').get('32001').group_id, '32');
+  assert.equal(
+    db.prepare('SELECT groupName FROM wms_transaction_items WHERE productId = ?').get('32001').groupName,
+    'หมวดปลายทางว่าง',
+    'ชื่อหมวดที่ค้างอยู่ในใบเบิกเก่าต้องอัปเดตตาม'
+  );
+});
+
+test('ย้ายสินค้าไปหมวดที่เลขเดิมถูกจองแล้ว: ต่อคิวท้ายสุดแทน', async () => {
+  const name = 'สินค้าย้ายหมวดเลขชน';
+  const oldSku = await seedProduct('33', 'หมวดต้นทางชน', name);
+  await seedProduct('34', 'หมวดปลายทางชน', 'ของที่จองเลข 001 ไว้แล้ว');   // กินเลข 34001 ไปก่อน
+  assert.equal(oldSku, '33001');
+
+  const saved = await callOk('updateProduct', products.updateProduct, {
+    params: { id: oldSku }, body: { name, groupId: '34', groupName: 'หมวดปลายทางชน', confirmSkuChange: true }
+  });
+  assert.equal(saved.sku, '34002', 'เลข 001 ถูกจองแล้ว ต้องต่อคิวเป็น 002');
+  assertMoved('ย้ายหมวดเลขชน', oldSku, '34002');
 });
 
 // ปุ่มนี้รันเลขหมวดใหม่ทั้งระบบ จึงต้องอยู่ท้ายสุด ไม่งั้นรหัสหมวดของเทสต์อื่นจะถูกสลับระหว่างทาง

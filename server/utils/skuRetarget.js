@@ -52,3 +52,32 @@ export const retargetSku = (db, fromSku, toSku, seq = null, group = null) => {
     }
   }
 };
+
+/**
+ * เลือกรหัสใหม่ให้สินค้าที่ย้ายไปอยู่หมวดอื่น
+ *
+ * เก็บเลขลำดับเดิมไว้ถ้าหมวดปลายทางยังไม่มีใครใช้เลขนั้น — ของชิ้นเดิมจะได้จำง่ายขึ้น
+ * (02003 → 05003) ถ้าเลขนั้นถูกจองแล้วค่อยต่อคิวท้ายสุดของหมวดปลายทาง
+ *
+ * กติกา "เก็บเลขเดิมถ้าว่าง" ใช้ได้เฉพาะการย้ายทีละตัวเท่านั้น — ตอนยุบหมวดทั้งก้อน
+ * ต้องต่อคิวท้ายสุดเสมอ เพราะสินค้าหลายตัวจากหมวดต้นทางมีสิทธิ์ชนเลขเดียวกันที่ปลายทาง
+ *
+ * @returns {{sku: string, seq: string}|null}  null = หมวดปลายทางเต็มเพดานเลขรัน 3 หลักแล้ว
+ */
+export const planSkuForGroup = (db, { itemSeq, groupId }) => {
+  const taken = (sku) => Boolean(db.prepare('SELECT 1 FROM items WHERE item_id = ?').get(sku));
+
+  // ต้องเป็นตัวเลข 1-999 จริงๆ ถึงจะรักษาเลขเดิมได้ — ข้อมูลเก่าบางแถวเลขลำดับว่างหรือเพี้ยน
+  // ถ้าเผลอเติมศูนย์ให้ค่าว่างจะกลายเป็นรหัสลงท้าย 000 ซึ่งไม่ใช่เลขที่ระบบออกให้ใครเลย
+  const raw = String(itemSeq ?? '').trim();
+  const keepSeq = /^\d{1,3}$/.test(raw) && Number(raw) >= 1 ? raw.padStart(3, '0') : null;
+  if (keepSeq && !taken(`${groupId}${keepSeq}`)) {
+    return { sku: `${groupId}${keepSeq}`, seq: keepSeq };
+  }
+
+  const max = db.prepare('SELECT MAX(CAST(item_seq AS INTEGER)) AS mx FROM items WHERE group_id = ?').get(groupId)?.mx || 0;
+  const next = max + 1;
+  if (next > 999) return null;   // เพดานเลขรัน 3 หลัก — ผู้เรียกต้องบอกผู้ใช้ ไม่ใช่เขียนรหัส 4 หลักลงไปเงียบๆ
+  const seq = String(next).padStart(3, '0');
+  return { sku: `${groupId}${seq}`, seq };
+};

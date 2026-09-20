@@ -5,6 +5,7 @@ import {
   deleteProduct,
   getDashboardStats,
   getNextSku,
+  previewSkuForGroup,
   getPriceHistory,
   getProductGroups,
   getProducts,
@@ -20,6 +21,7 @@ const manager = [verifyAuth, authorizeRoles('Admin', 'Manager')];
 router.get('/products', verifyAuth, getProducts);
 router.get('/products/next-sku', verifyAuth, getNextSku);
 router.get('/products/:id/price-history', verifyAuth, getPriceHistory);
+router.get('/products/:id/sku-preview', verifyAuth, previewSkuForGroup);   // รหัสใหม่ที่จะได้ถ้าย้ายหมวด (อ่านอย่างเดียว)
 router.get('/product-groups', verifyAuth, getProductGroups);
 // จัดการหมวดหมู่ (Admin/Manager) — merge ต้องมาก่อน :id
 router.post('/product-groups/merge', ...manager, mergeCategories);

@@ -83,6 +83,7 @@ export default function Products() {
   const [adjustCuts, setAdjustCuts] = useState({});             // locationId -> จำนวนที่หายไปจากที่นั้น
   const [productModal, setProductModal] = useState(false);
   const [editingSku, setEditingSku] = useState(null);
+  const [editingGroupId, setEditingGroupId] = useState(null); // หมวดเดิมตอนเปิดฟอร์ม — ใช้เทียบว่าย้ายหมวดไหม (ไม่ใช่ค่าที่ถูก default ให้)
   const [productForm, setProductForm] = useState(emptyProductForm);
   const [nextSkuPreview, setNextSkuPreview] = useState(''); // SKU อัตโนมัติที่จะได้ (โชว์ตอนเพิ่มสินค้าใหม่)
   const [imageFile, setImageFile] = useState(null);
@@ -200,6 +201,7 @@ export default function Products() {
     const firstGroup = groups[0];
     if (product) {
       setEditingSku(product.sku);
+      setEditingGroupId(product.groupId);
       // สินค้าเก่าที่อยู่กลุ่ม '00' (ที่ถูกเลิกใช้) ให้ default ไปกลุ่มแรกที่เลือกได้
       const validGroup = groups.find(g => g.id === product.groupId) || firstGroup;
       setProductForm({
@@ -224,6 +226,7 @@ export default function Products() {
         .catch(() => {});
     } else {
       setEditingSku(null);
+      setEditingGroupId(null);
       setEditLocations(null);
       setProductForm({ ...emptyProductForm, groupId: firstGroup?.id || '01', groupName: firstGroup?.name || '' });
       setImagePreview('');
@@ -323,12 +326,46 @@ export default function Products() {
     event.preventDefault();
     if (!productForm.name.trim()) return toast.error('กรุณาระบุชื่อสินค้า');
 
-    // แก้ไข SKU ได้ แต่ SKU ใหม่ต้องขึ้นต้นด้วยรหัสหมวด (ไม่มีขีด เช่น 02001) — server ตรวจซ้ำอีกชั้น
-    if (editingSku) {
+    // ย้ายหมวด = ระบบออกรหัสใหม่ให้เอง คนไม่ต้องพิมพ์ (และห้ามพิมพ์แข่ง เดี๋ยวได้รหัสชนของเดิม)
+    const movingGroup = Boolean(editingSku) && editingGroupId != null && productForm.groupId !== editingGroupId;
+
+    // แก้ไข SKU เองได้เฉพาะตอนไม่ได้ย้ายหมวด และต้องขึ้นต้นด้วยรหัสหมวด — server ตรวจซ้ำอีกชั้น
+    if (editingSku && !movingGroup) {
       const newSku = productForm.sku.trim().toUpperCase();
       if (!newSku) return toast.error('กรุณาระบุ รหัสสินค้า');
       if (newSku !== editingSku && !newSku.startsWith(productForm.groupId)) {
         return toast.error(`รหัสสินค้าใหม่ต้องขึ้นต้นด้วย ${productForm.groupId}`);
+      }
+    }
+
+    // รหัสกำลังจะเปลี่ยน → ต้องให้ยืนยันก่อน เพราะป้าย QR ที่ติดของไว้แล้วจะสแกนไม่เจอทันที
+    // ย้ายหมวด: ถามเซิร์ฟเวอร์ว่าจะได้เบอร์อะไร (ใช้ตัวคิดเลขตัวเดียวกับตอนบันทึกจริง)
+    let confirmSkuChange = false;
+    if (editingSku) {
+      let nextSku = null;
+      if (movingGroup) {
+        const preview = await fetchApi(
+          `/api/products/${encodeURIComponent(editingSku)}/sku-preview?group=${encodeURIComponent(productForm.groupId)}`
+        ).catch(() => null);
+        if (!preview?.success) return;   // fetchApi เด้งข้อความจริงให้แล้ว (เช่น หมวดเต็ม 999)
+        if (preview.changed) nextSku = preview.sku;
+      } else if (productForm.sku.trim().toUpperCase() !== editingSku) {
+        nextSku = productForm.sku.trim().toUpperCase();
+      }
+
+      if (nextSku) {
+        const ok = await confirmDialog({
+          title: 'รหัสสินค้าจะเปลี่ยน',
+          message: `${editingSku} → ${nextSku}
+
+ป้าย QR / บาร์โค้ดที่ติดกล่องหรือชั้นวางไว้แล้วจะสแกนไม่เจอ ต้องพิมพ์ป้ายใหม่ติดแทน
+
+ประวัติและตำแหน่งบนผังคลังจะย้ายตามรหัสใหม่ให้เอง`,
+          confirmText: 'เปลี่ยนรหัส',
+          danger: true
+        });
+        if (!ok) return;
+        confirmSkuChange = true;
       }
     }
 
@@ -351,7 +388,8 @@ export default function Products() {
       const payload = {
         ...productForm,
         // สร้างใหม่: ส่ง sku ว่าง → server รันเลขอัตโนมัติตามหมวด (กัน race/ซ้ำ) | แก้ไข: ส่งค่าที่กรอก
-        sku: editingSku ? productForm.sku : '',
+        sku: editingSku && !movingGroup ? productForm.sku : '',
+        confirmSkuChange,
         imageUrl,
         latestCost: productForm.latestCost === '' ? null : Number(productForm.latestCost),
         minStock: Number(productForm.minStock) || 0,
@@ -364,7 +402,7 @@ export default function Products() {
       });
 
       if (json.success) {
-        toast.success(editingSku ? 'อัปเดตสินค้าเรียบร้อย' : 'สร้างสินค้าเรียบร้อย');
+        toast.success(json.message || (editingSku ? 'อัปเดตสินค้าเรียบร้อย' : 'สร้างสินค้าเรียบร้อย'));
         setProductModal(false);
         await fetchProducts();
       }
