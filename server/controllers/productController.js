@@ -356,10 +356,16 @@ export const updateProduct = (req, res) => {
       }
     }
 
-    db.transaction(() => {
+    // ต้องปิด FK **ก่อน**เปิด transaction — items.item_id เป็น primary key ที่ตารางลูกอ้างถึง
+    // พอเปลี่ยนค่าในตารางหลัก แถวลูกจะกำพร้าชั่วขณะแล้วโดน FK ตีตกทันที
+    // (สั่ง pragma ตอนอยู่ใน transaction แล้ว SQLite เมินเงียบๆ — นี่คือสาเหตุที่การแก้รหัสสินค้า
+    //  ที่มีประวัติอยู่แล้วพังมาตลอดด้วย "Database error" ทั้งที่ผ่านด่านตรวจรหัสมาแล้ว)
+    const skuChanged = requestedSku !== sku;
+    if (skuChanged) db.pragma('foreign_keys = OFF');
+    const applyUpdate = db.transaction(() => {
       ensureGroup(groupId, groupName);
 
-      if (requestedSku !== sku) {
+      if (skuChanged) {
         // item_id เป็น primary key ที่ stock_in/stock_out/product_settings/item_locations/ใบเบิกอ้างถึง
         // เปลี่ยน item_id ในที่เดียว แล้ว retargetSku ลากตารางลูกทุกตารางตามไป
         // (รวม item_locations — ถ้าลืม ตำแหน่งจัดเก็บจะค้างกับรหัสเก่าแล้วสินค้าจะกลับไปอยู่หน้า "ยังไม่ระบุตำแหน่ง")
@@ -386,7 +392,12 @@ export const updateProduct = (req, res) => {
         if (firstLot) db.prepare('UPDATE stock_in SET unit_cost = ? WHERE stock_in_id = ?').run(latestCost, firstLot.stock_in_id);
       }
       logAudit(req.user?.username, 'product.update', 'product', requestedSku, { name, minStock, latestCost: costProvided ? latestCost : undefined });
-    })();
+    });
+    try {
+      applyUpdate();
+    } finally {
+      if (skuChanged) db.pragma('foreign_keys = ON');
+    }
 
     broadcast('products');
     return res.json({ success: true, message: 'อัปเดตสินค้าเรียบร้อย' });

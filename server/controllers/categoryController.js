@@ -58,16 +58,11 @@ export const resequenceCategories = (req, res) => {
     const rename = (oldId, newId) => {
       const items = db.prepare('SELECT item_id, item_seq FROM items WHERE group_id = ?').all(oldId);
       db.prepare('UPDATE item_groups SET group_id = ? WHERE group_id = ?').run(newId, oldId);
-      db.prepare('UPDATE items SET group_id = ? WHERE group_id = ?').run(newId, oldId);
       for (const it of items) {
-        const oldSku = it.item_id;
-        const newSku = `${newId}${it.item_seq}`;   // ลำดับเดิม เปลี่ยนแค่ 2 หลักหน้า
-        db.prepare('UPDATE items SET item_id = ? WHERE item_id = ?').run(newSku, oldSku);
-        db.prepare('UPDATE stock_in SET item_id = ? WHERE item_id = ?').run(newSku, oldSku);
-        db.prepare('UPDATE stock_out SET item_id = ? WHERE item_id = ?').run(newSku, oldSku);
-        db.prepare('UPDATE product_settings SET item_id = ? WHERE item_id = ?').run(newSku, oldSku);
-        db.prepare('UPDATE wms_transaction_items SET productId = ?, sku = ?, groupId = ? WHERE productId = ? OR sku = ?')
-          .run(newSku, newSku, newId, oldSku, oldSku);
+        // ลำดับเดิม เปลี่ยนแค่ 2 หลักหน้า — ต้องผ่านตัวช่วยกลางเท่านั้น
+        // (เดิมไล่เขียนรายชื่อตารางเองแล้วลืม item_locations ของทั้งหมวดจึงหลุดจากผังคลัง
+        //  แล้วช่องเก่าที่ค้างอยู่กับรหัสเดิมจะไปสวมให้สินค้าตัวอื่นที่มารับรหัสนั้นต่อ)
+        retargetSku(db, it.item_id, `${newId}${it.item_seq}`, it.item_seq, { id: newId });
       }
     };
 
@@ -169,12 +164,10 @@ export const mergeCategories = (req, res) => {
         const seq3 = String(seq).padStart(3, '0');
         const newSku = `${toId}${seq3}`;
         const oldSku = it.item_id;
-        db.prepare('UPDATE items SET item_id = ?, group_id = ?, item_seq = ? WHERE item_id = ?').run(newSku, toId, seq3, oldSku);
-        db.prepare('UPDATE stock_in SET item_id = ? WHERE item_id = ?').run(newSku, oldSku);
-        db.prepare('UPDATE stock_out SET item_id = ? WHERE item_id = ?').run(newSku, oldSku);
-        db.prepare('UPDATE product_settings SET item_id = ? WHERE item_id = ?').run(newSku, oldSku);
-        db.prepare('UPDATE wms_transaction_items SET productId = ?, sku = ?, groupId = ?, groupName = ? WHERE productId = ? OR sku = ?')
-          .run(newSku, newSku, toId, to.group_name, oldSku, oldSku);
+        // ยกหมวดทั้งก้อน เลขลำดับจึงต้อง "ต่อคิวท้ายสุด" เสมอ รักษาเลขเดิมไม่ได้
+        // เพราะสินค้าหลายตัวจากหมวดต้นทางมีสิทธิ์ชนเลขที่หมวดปลายทางใช้อยู่แล้ว
+        // (ต่างจากการย้ายทีละตัวในหน้าแก้สินค้า ที่รักษาเลขเดิมไว้ได้ถ้ายังว่าง)
+        retargetSku(db, oldSku, newSku, seq3, { id: toId, name: to.group_name });
       }
       db.prepare('DELETE FROM item_groups WHERE group_id = ?').run(fromId);
       logAudit(req.user?.username, 'category.merge', 'category', fromId, { from: from.group_name, to: to.group_name, moved: items.length });

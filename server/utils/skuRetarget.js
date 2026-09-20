@@ -18,17 +18,37 @@ export const SKU_CHILD_TABLES = [
 
 /**
  * ย้ายรหัสสินค้าจาก fromSku ไป toSku ทั้งตารางหลักและตารางลูกทุกตาราง
- * ผู้เรียกต้องครอบ transaction เอง (และปิด foreign_keys ถ้ารหัสปลายทางยังชนกันระหว่างทาง)
+ *
+ * ⚠️ ผู้เรียกต้องปิด foreign_keys **ก่อนเปิด transaction** เสมอ — items.item_id เป็น primary key
+ * ที่ตารางลูกอ้างถึง พอเปลี่ยนค่าในตารางหลัก แถวลูกจะกลายเป็นกำพร้าชั่วขณะแล้วโดน FK ตีตก
+ * (สั่ง pragma ตอนอยู่ใน transaction แล้ว SQLite จะเมินเงียบๆ เหมือนไม่ได้สั่ง — ต้องสั่งข้างนอก)
+ *
  * @param {object} db  better-sqlite3 database
  * @param {string} fromSku
  * @param {string} toSku
  * @param {string|null} seq  ค่า item_seq ใหม่ (ไม่ส่งมา = ไม่แตะ)
+ * @param {{id: string, name?: string}|null} group  ย้ายหมวดด้วย — อัปเดต items.group_id
+ *        และชื่อหมวดที่ snapshot ไว้ในใบเบิกเก่าให้ตรงกัน (ไม่ส่งมา = เปลี่ยนแค่รหัส ไม่แตะหมวด)
  */
-export const retargetSku = (db, fromSku, toSku, seq = null) => {
-  if (seq == null) db.prepare('UPDATE items SET item_id = ? WHERE item_id = ?').run(toSku, fromSku);
-  else db.prepare('UPDATE items SET item_id = ?, item_seq = ? WHERE item_id = ?').run(toSku, seq, fromSku);
+export const retargetSku = (db, fromSku, toSku, seq = null, group = null) => {
+  const sets = ['item_id = @toSku'];
+  const params = { fromSku, toSku };
+  if (seq != null) { sets.push('item_seq = @seq'); params.seq = seq; }
+  if (group) { sets.push('group_id = @groupId'); params.groupId = group.id; }
+  db.prepare(`UPDATE items SET ${sets.join(', ')} WHERE item_id = @fromSku`).run(params);
 
   for (const { table, column } of SKU_CHILD_TABLES) {
     db.prepare(`UPDATE ${table} SET ${column} = ? WHERE ${column} = ?`).run(toSku, fromSku);
+  }
+
+  // ต้องอยู่หลังลูปข้างบนจบแล้วเท่านั้น — ใบเบิกถูกหาด้วยรหัสใหม่ ถ้าทำก่อนจะยังหาแถวไม่เจอ
+  // (ชื่อหมวดใน snapshot อัปเดตเฉพาะตอนส่ง name มา ไม่งั้นจะไปล้างชื่อเดิมทิ้งเป็นค่าว่าง)
+  if (group) {
+    if (group.name != null) {
+      db.prepare('UPDATE wms_transaction_items SET groupId = ?, groupName = ? WHERE productId = ?')
+        .run(group.id, group.name, toSku);
+    } else {
+      db.prepare('UPDATE wms_transaction_items SET groupId = ? WHERE productId = ?').run(group.id, toSku);
+    }
   }
 };
