@@ -11,6 +11,7 @@ import {
 } from '../data/userManager.js';
 import { sendEmail } from '../utils/sendEmail.js';
 import { accountStatusEmail } from '../utils/emailTemplates.js';
+import { isValidEmail, validatePassword, validateUsername } from '../../shared/credentialPolicy.js';
 import jwt from 'jsonwebtoken';
 import bcrypt from 'bcryptjs';
 import { config } from '../config.js';
@@ -142,43 +143,65 @@ export const deleteUser = (req, res) => {
 
 export const updateProfile = async (req, res) => {
   try {
-    const { newUsername, email, password, avatarUrl } = req.body;
+    const { newUsername, email, password, currentPassword, avatarUrl } = req.body;
 
     const current = getUserById(req.user?.id);
     if (!current) return res.status(404).json({ success: false, message: 'ไม่พบผู้ใช้งาน' });
 
     const updates = {};
 
-    // 1. เช็คว่า Username ใหม่ซ้ำกับคนอื่นไหม
-    if (newUsername && newUsername !== current.username) {
-      const isTaken = getUserByUsername(newUsername);
+    // 1. Username ใหม่ — ตรวจกติกาเฉพาะตอนเปลี่ยน (ชื่อเดิมที่ตั้งก่อนมีกติกายังใช้ต่อได้)
+    const wantedUsername = typeof newUsername === 'string' ? newUsername.trim() : '';
+    if (wantedUsername && wantedUsername !== current.username) {
+      const usernameError = validateUsername(wantedUsername);
+      if (usernameError) return res.status(400).json({ success: false, message: usernameError });
+      const isTaken = getUserByUsername(wantedUsername);
       if (isTaken && isTaken.id !== current.id) {
         return res.status(400).json({ success: false, message: 'Username นี้ถูกใช้งานแล้ว' });
       }
-      updates.username = newUsername;
+      updates.username = wantedUsername;
     }
 
-    // 2. เช็คว่า Email ใหม่ซ้ำกับคนอื่นไหม
+    // 2. Email ใหม่ — หน้าตั้งค่าส่งอีเมลเดิมมาทุกครั้ง นับว่า "เปลี่ยน" เฉพาะเมื่อไม่ตรงของเดิม
+    let emailChanged = false;
     if (email) {
       const normalizedEmail = String(email).trim().toLowerCase();
-      const emailTaken = getUserByEmail(normalizedEmail);
-      if (emailTaken && emailTaken.id !== current.id) {
-        return res.status(400).json({ success: false, message: 'Email นี้ถูกใช้งานแล้ว' });
+      if (normalizedEmail !== current.email) {
+        if (!isValidEmail(normalizedEmail)) return res.status(400).json({ success: false, message: 'รูปแบบอีเมลไม่ถูกต้อง' });
+        const emailTaken = getUserByEmail(normalizedEmail);
+        if (emailTaken && emailTaken.id !== current.id) {
+          return res.status(400).json({ success: false, message: 'Email นี้ถูกใช้งานแล้ว' });
+        }
+        updates.email = normalizedEmail;
+        emailChanged = true;
       }
-      updates.email = normalizedEmail;
     }
     if (typeof avatarUrl === 'string') updates.avatarUrl = avatarUrl;
 
-    // 3. Hash รหัสผ่านใหม่ก่อนเซฟเสมอ
     if (password) {
-      if (password.length < 8) {
-        return res.status(400).json({ success: false, message: 'รหัสผ่านใหม่ต้องมีอย่างน้อย 8 ตัวอักษร' });
+      const passwordError = validatePassword(password, { username: updates.username || current.username });
+      if (passwordError) return res.status(400).json({ success: false, message: passwordError });
+    }
+
+    // 3. เปลี่ยนรหัสผ่านหรืออีเมลต้องยืนยันรหัสผ่านปัจจุบัน
+    //    อีเมลคือทางกู้บัญชี — ถ้าใครใช้เครื่องที่ล็อกอินค้างไว้แล้วเปลี่ยนอีเมลเป็นของตัวเอง
+    //    จะกด "ลืมรหัสผ่าน" ยึดบัญชีไปได้ทันที
+    //    ตอบ 400 ไม่ใช่ 401 เพราะหน้าเว็บถือว่า 401/403 = session หลุด แล้วเด้งออกจากระบบ
+    if (password || emailChanged) {
+      const confirmed = typeof currentPassword === 'string' && currentPassword.length > 0
+        && await bcrypt.compare(currentPassword, current.password);
+      if (!confirmed) {
+        return res.status(400).json({
+          success: false,
+          code: 'CURRENT_PASSWORD',
+          message: currentPassword ? 'รหัสผ่านปัจจุบันไม่ถูกต้อง' : 'กรุณากรอกรหัสผ่านปัจจุบันเพื่อยืนยันการเปลี่ยนรหัสผ่านหรืออีเมล'
+        });
       }
-      updates.password = await bcrypt.hash(password, 10);
+      if (password) updates.password = await bcrypt.hash(password, 10);
     }
 
     const updated = updateUser(current.id, updates);
-    logAudit(req.user?.username, 'user.profile_update', 'user', updated.id);
+    logAudit(req.user?.username, 'user.profile_update', 'user', updated.id, { fields: Object.keys(updates) });
 
     // 4. ออก Token ใหม่เฉพาะตอนที่ Username เปลี่ยน (เพราะ payload เปลี่ยน)
     //    ต้องพก session_id ปัจจุบันไปด้วย ไม่งั้น token ใหม่จะไม่ตรงกับ session แล้วตัดตัวเองออก

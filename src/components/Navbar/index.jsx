@@ -208,6 +208,10 @@ export default function Navbar() {
   const handleLogout = () => {
     sessionStorage.removeItem('token');
     sessionStorage.removeItem('currentUser');
+    // ตะกร้าใบเบิกที่ค้างไว้ (Inventory เก็บแยกตามผู้ใช้) — ออกจากระบบแล้วไม่ควรเหลือให้คนถัดไปเห็น
+    Object.keys(sessionStorage)
+      .filter((key) => key.startsWith('wms-cart:'))
+      .forEach((key) => sessionStorage.removeItem(key));
     resetEventStream(); // ปิด SSE connection ของ session เดิม
     setIsAuthenticated(false);
     navigate('/login');

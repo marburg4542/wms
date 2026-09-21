@@ -34,6 +34,14 @@ export const forgotPasswordLimiter = makeLimiter({
   message: 'ขอรีเซ็ตรหัสผ่านบ่อยเกินไป กรุณารอสักครู่แล้วลองใหม่'
 });
 
+// เช็กชื่อผู้ใช้ว่าง/ไม่ว่างขณะพิมพ์ — หน้าเว็บหน่วง 0.5 วิก่อนยิง คนพิมพ์ปกติใช้ไม่ถึงเพดาน
+// แต่กันการไล่ยิงเดารายชื่อผู้ใช้ทั้งบริษัท (endpoint นี้ไม่ต้องล็อกอิน)
+export const usernameCheckLimiter = makeLimiter({
+  windowMs: 10 * 60 * 1000,
+  max: 60,
+  message: 'ตรวจสอบชื่อผู้ใช้บ่อยเกินไป กรุณารอสักครู่'
+});
+
 export const registerLimiter = makeLimiter({
   windowMs: 60 * 60 * 1000,
   max: 10,

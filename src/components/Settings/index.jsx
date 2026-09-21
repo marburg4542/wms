@@ -4,6 +4,9 @@ import toast from 'react-hot-toast';
 import { fetchApi, getAssetUrl } from '../../utils/api';
 import { enablePush, pushPermissionState, pushEnvironment } from '../../utils/push';
 import { shrinkImage } from '../../utils/image';
+import { useUsernameCheck, usernameHintTone } from '../../utils/useUsernameCheck';
+import { USERNAME_HINT, validatePassword } from '../../../shared/credentialPolicy';
+import PasswordStrength from '../PasswordStrength';
 
 export default function SettingsPage() {
   const stored = JSON.parse(sessionStorage.getItem('currentUser') || '{}');
@@ -15,7 +18,12 @@ export default function SettingsPage() {
   const [email, setEmail] = useState(stored.email || '');
   const [newPassword, setNewPassword] = useState('');
   const [confirmPassword, setConfirmPassword] = useState('');
+  const [currentPassword, setCurrentPassword] = useState('');
   const [pushState, setPushState] = useState(pushPermissionState());
+  const usernameCheck = useUsernameCheck(username, { currentUsername: stored.username });
+  // เปลี่ยนรหัสผ่านหรืออีเมลต้องยืนยันด้วยรหัสผ่านปัจจุบัน (เซิร์ฟเวอร์บังคับ) — ช่องนี้จึงโผล่เฉพาะตอนจำเป็น
+  const emailChanged = email.trim().toLowerCase() !== String(stored.email || '').toLowerCase();
+  const needsCurrentPassword = Boolean(newPassword) || emailChanged;
   const pushEnv = pushEnvironment();
 
   // เปิดการแจ้งเตือน — เรียกจากการแตะปุ่มโดยตรง (จำเป็นบน iOS)
@@ -38,8 +46,14 @@ export default function SettingsPage() {
 
   const handleProfileSubmit = async (e) => {
     e.preventDefault();
+    if (['invalid', 'taken'].includes(usernameCheck.status)) return toast.error(usernameCheck.message);
+    if (newPassword) {
+      const passwordError = validatePassword(newPassword, { username });
+      if (passwordError) return toast.error(passwordError);
+    }
     if (newPassword && newPassword !== confirmPassword) return toast.error('รหัสผ่านใหม่ไม่ตรงกัน');
-    
+    if (needsCurrentPassword && !currentPassword) return toast.error('กรุณากรอกรหัสผ่านปัจจุบันเพื่อยืนยัน');
+
     try {
       let finalAvatarUrl = stored.avatarUrl;
 
@@ -61,7 +75,8 @@ export default function SettingsPage() {
           newUsername: username,
           email: email,
           avatarUrl: finalAvatarUrl,
-          password: newPassword || undefined
+          password: newPassword || undefined,
+          currentPassword: needsCurrentPassword ? currentPassword : undefined
         })
       });
 
@@ -104,7 +119,10 @@ export default function SettingsPage() {
         {/* Username */}
         <div className="form-control w-full">
           <label className="label font-semibold text-xs opacity-70">ชื่อผู้ใช้</label>
-          <input type="text" value={username} onChange={(e) => setUsername(e.target.value)} className="input input-bordered w-full" />
+          <input type="text" value={username} onChange={(e) => setUsername(e.target.value)} className="input input-bordered w-full" autoComplete="username" maxLength={30} />
+          {usernameCheck.status !== 'idle' && (
+            <p className={`mt-1 text-xs ${usernameHintTone(usernameCheck.status)}`}>{usernameCheck.message || USERNAME_HINT}</p>
+          )}
         </div>
 
         {/* Email */}
@@ -116,14 +134,26 @@ export default function SettingsPage() {
         {/* Password */}
         <div className="form-control w-full">
           <label className="label font-semibold text-xs opacity-70">รหัสผ่านใหม่ (เว้นว่างหากไม่ต้องการเปลี่ยน)</label>
-          <input type="password" value={newPassword} onChange={(e) => setNewPassword(e.target.value)} className="input input-bordered w-full" />
+          <input type="password" value={newPassword} onChange={(e) => setNewPassword(e.target.value)} className="input input-bordered w-full" autoComplete="new-password" />
+          <div className="mt-2"><PasswordStrength password={newPassword} username={username} /></div>
         </div>
 
         <div className="form-control w-full">
           <label className="label font-semibold text-xs opacity-70">ยืนยันรหัสผ่านใหม่</label>
-          <input type="password" value={confirmPassword} onChange={(e) => setConfirmPassword(e.target.value)} className="input input-bordered w-full" />
+          <input type="password" value={confirmPassword} onChange={(e) => setConfirmPassword(e.target.value)} className="input input-bordered w-full" autoComplete="new-password" />
+          {confirmPassword && confirmPassword !== newPassword && (
+            <p className="mt-1 text-xs text-error">รหัสผ่านใหม่ทั้งสองช่องไม่ตรงกัน</p>
+          )}
         </div>
-        
+
+        {needsCurrentPassword && (
+          <div className="form-control w-full rounded-xl border border-warning/40 bg-warning/5 p-3">
+            <label className="label font-semibold text-xs pt-0">รหัสผ่านปัจจุบัน (ยืนยันการเปลี่ยน{newPassword ? 'รหัสผ่าน' : 'อีเมล'})</label>
+            <input type="password" value={currentPassword} onChange={(e) => setCurrentPassword(e.target.value)} className="input input-bordered w-full" autoComplete="current-password" />
+            <p className="mt-1 text-xs text-base-content/60">เพื่อความปลอดภัย การเปลี่ยนรหัสผ่านหรืออีเมลต้องยืนยันด้วยรหัสผ่านที่ใช้อยู่ตอนนี้</p>
+          </div>
+        )}
+
         <button type="submit" className="btn btn-primary w-full sm:w-auto px-6">บันทึกข้อมูล</button>
       </form>
 

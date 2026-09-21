@@ -6,6 +6,9 @@ import toast from 'react-hot-toast';
 import { AuthContext } from '../../AuthContext';
 import { fetchApi } from '../../utils/api'; // 🔥 นำเข้า fetchApi มาใช้งาน
 import { subscribeIfGranted } from '../../utils/push';
+import { useUsernameCheck, usernameHintTone } from '../../utils/useUsernameCheck';
+import { USERNAME_HINT, validatePassword } from '../../../shared/credentialPolicy';
+import PasswordStrength from '../PasswordStrength';
 
 export default function LoginPage() {
   const { setIsAuthenticated } = useContext(AuthContext);
@@ -26,6 +29,9 @@ export default function LoginPage() {
   const [email, setEmail] = useState('');
   // กันกดปุ่มรัวระหว่างรอเซิร์ฟเวอร์ตอบ ใช้แพตเทิร์นเดียวกับปุ่มส่งใบเบิก
   const [forgotSubmitting, setForgotSubmitting] = useState(false);
+
+  // เช็กชื่อผู้ใช้ขณะพิมพ์ (รูปแบบ + มีคนใช้แล้วหรือยัง) — ทำงานเฉพาะตอนอยู่หน้าสมัคร
+  const usernameCheck = useUsernameCheck(mode === 'register' ? regUsername : '');
 
   // Load remembered username
   useEffect(() => {
@@ -74,6 +80,10 @@ export default function LoginPage() {
   // 2) Register
   const handleRegister = async (e) => {
     e.preventDefault();
+    // ตรวจในเครื่องก่อน จะได้บอกทันทีว่าผิดตรงไหน (เซิร์ฟเวอร์ตรวจซ้ำด้วยกติกาชุดเดียวกัน)
+    if (['invalid', 'taken'].includes(usernameCheck.status)) return toast.error(usernameCheck.message);
+    const passwordError = validatePassword(regPassword, { username: regUsername });
+    if (passwordError) return toast.error(passwordError);
     if (regPassword !== confirmPassword) {
       return toast.error('รหัสผ่านทั้งสองช่องไม่ตรงกัน');
     }
@@ -199,9 +209,14 @@ export default function LoginPage() {
                   placeholder="ชื่อผู้ใช้"
                   value={regUsername}
                   onChange={e => setRegUsername(e.target.value)}
+                  autoComplete="username"
+                  maxLength={30}
                   required
                 />
               </div>
+              <p className={`-mt-2 px-4 text-xs ${usernameHintTone(usernameCheck.status)}`}>
+                {usernameCheck.message || USERNAME_HINT}
+              </p>
               <div className="form-control relative">
                 <FaEnvelope className="absolute left-4 top-1/2 -translate-y-1/2 text-base-content/40 z-10" />
                 <input
@@ -218,12 +233,14 @@ export default function LoginPage() {
                 <input
                   className="input input-bordered pl-12 rounded-full w-full bg-base-100 text-sm focus:outline-none"
                   type="password"
-                  placeholder="รหัสผ่าน (อย่างน้อย 8 ตัวอักษร)"
+                  placeholder="รหัสผ่าน"
                   value={regPassword}
                   onChange={e => setRegPassword(e.target.value)}
+                  autoComplete="new-password"
                   required
                 />
               </div>
+              <PasswordStrength password={regPassword} username={regUsername} />
               <div className="form-control relative">
                 <FaLockOpen className="absolute left-4 top-1/2 -translate-y-1/2 text-base-content/40 z-10" />
                 <input
@@ -232,9 +249,13 @@ export default function LoginPage() {
                   placeholder="ยืนยันรหัสผ่าน"
                   value={confirmPassword}
                   onChange={e => setConfirmPassword(e.target.value)}
+                  autoComplete="new-password"
                   required
                 />
               </div>
+              {confirmPassword && confirmPassword !== regPassword && (
+                <p className="-mt-2 px-4 text-xs text-error">รหัสผ่านทั้งสองช่องไม่ตรงกัน</p>
+              )}
               <button type="submit" className="btn btn-primary rounded-full w-full text-white font-semibold mt-4">
                 สมัครสมาชิก
               </button>

@@ -4,6 +4,7 @@ import crypto from 'crypto';
 import { getUserById, getUserByUsername, getUserByEmail, createUser, updateUser, setSessionId } from '../data/userManager.js';
 import { sendEmail } from '../utils/sendEmail.js';
 import { passwordResetEmail, registrationReceivedEmail } from '../utils/emailTemplates.js';
+import { isValidEmail, validatePassword, validateUsername } from '../../shared/credentialPolicy.js';
 import { config } from '../config.js';
 import db, { logAudit } from '../db.js';
 import { broadcast } from '../events.js';
@@ -78,9 +79,12 @@ export const register = async (req, res) => {
     return res.status(400).json({ success: false, message: 'กรุณากรอกข้อมูลสมัครสมาชิกให้ครบถ้วน' });
   }
 
-  if (password.length < 8) {
-    return res.status(400).json({ success: false, message: 'รหัสผ่านต้องมีอย่างน้อย 8 ตัวอักษร' });
-  }
+  // กติกาเดียวกับที่หน้าเว็บแสดงขณะพิมพ์ (shared/credentialPolicy.js) — ตรวจซ้ำที่นี่เพราะยิง API ตรงได้
+  const usernameError = validateUsername(username);
+  if (usernameError) return res.status(400).json({ success: false, message: usernameError });
+  if (!isValidEmail(email)) return res.status(400).json({ success: false, message: 'รูปแบบอีเมลไม่ถูกต้อง' });
+  const passwordError = validatePassword(password, { username });
+  if (passwordError) return res.status(400).json({ success: false, message: passwordError });
 
   // แยกข้อความให้ชัดว่าซ้ำที่ช่องไหน — บัญชีที่ถูก "ระงับ (Denied)" ยังอยู่ในระบบและกันชื่อ/อีเมลไว้
   // ต่างจากบัญชีที่ถูก "ลบ" ซึ่งหายไปจริงและสมัครซ้ำได้
@@ -164,10 +168,6 @@ export const resetPassword = async (req, res) => {
     return res.status(400).json({ success: false, message: 'ลิงก์รีเซ็ตรหัสผ่านไม่ถูกต้อง' });
   }
 
-  if (!newPassword || newPassword.length < 8) {
-    return res.status(400).json({ success: false, message: 'รหัสผ่านใหม่ต้องมีอย่างน้อย 8 ตัวอักษร' });
-  }
-
   const tokenHash = hashResetToken(token);
   const tokenData = db.prepare(`
     SELECT prt.token_hash, prt.user_id, prt.expires_at, prt.used_at, u.email
@@ -187,12 +187,33 @@ export const resetPassword = async (req, res) => {
     return res.status(404).json({ success: false, message: 'ไม่พบผู้ใช้งาน' });
   }
 
+  // ตรวจหลังรู้ตัวผู้ใช้แล้ว จะได้เช็กข้อ "ห้ามมีชื่อผู้ใช้ในรหัสผ่าน" ได้ด้วย
+  // ตั้งไม่ผ่านก็ไม่เสียลิงก์ — ลิงก์ถูกใช้ (used_at) เฉพาะตอนตั้งสำเร็จ
+  const passwordError = validatePassword(newPassword, { username: user.username });
+  if (passwordError) return res.status(400).json({ success: false, message: passwordError });
+
   const hashedPassword = await bcrypt.hash(newPassword, 10);
   updateUser(user.id, { password: hashedPassword });
   db.prepare('UPDATE password_reset_tokens SET used_at = ? WHERE token_hash = ?').run(Date.now(), tokenHash);
   logAudit(user.username, 'auth.password_reset', 'user', user.id);
 
   return res.json({ success: true, message: 'รีเซ็ตรหัสผ่านสำเร็จ คุณสามารถเข้าสู่ระบบได้ทันที' });
+};
+
+// เช็กชื่อผู้ใช้ขณะพิมพ์ในหน้าสมัคร/ตั้งค่า — ไม่ต้องล็อกอิน (ผู้สมัครยังไม่มีบัญชี) จึงมี rate limit คุม
+// ตอบ 200 ทุกกรณี แล้วบอกผลใน available/reason ให้หน้าเว็บแสดงข้อความใต้ช่องกรอก
+export const checkUsernameAvailable = (req, res) => {
+  const username = String(req.query.username || '').trim();
+  const formatError = validateUsername(username);
+  if (formatError) return res.json({ success: true, available: false, reason: 'format', message: formatError });
+
+  const taken = getUserByUsername(username);   // เทียบแบบไม่สนตัวพิมพ์เล็ก/ใหญ่ เหมือนตอนสมัครจริง
+  return res.json({
+    success: true,
+    available: !taken,
+    reason: taken ? 'taken' : null,
+    message: taken ? 'ชื่อผู้ใช้นี้มีคนใช้แล้ว' : 'ใช้ชื่อนี้ได้'
+  });
 };
 
 export const verifyToken = (req, res) => {
