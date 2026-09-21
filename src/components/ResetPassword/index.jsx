@@ -4,6 +4,8 @@ import { useParams, useNavigate } from 'react-router-dom';
 import { FaLock } from 'react-icons/fa';
 import toast from 'react-hot-toast';
 import { fetchApi } from '../../utils/api';
+import { validatePassword } from '../../../shared/credentialPolicy';
+import PasswordStrength from '../PasswordStrength';
 
 export default function ResetPasswordPage() {
   const { token } = useParams();
@@ -14,6 +16,9 @@ export default function ResetPasswordPage() {
 
   const handleSubmit = async (e) => {
     e.preventDefault();
+    // หน้านี้ไม่รู้ชื่อผู้ใช้ ข้อ "ห้ามมีชื่อผู้ใช้ในรหัสผ่าน" เซิร์ฟเวอร์จะตรวจให้ตอนกดบันทึก
+    const passwordError = validatePassword(pwd);
+    if (passwordError) return toast.error(passwordError);
     if (pwd !== confirm) {
       return toast.error('รหัสผ่านใหม่ทั้งสองช่องไม่ตรงกัน');
     }
@@ -46,13 +51,15 @@ export default function ResetPasswordPage() {
             <input
               className="input input-bordered pl-12 rounded-full w-full bg-base-100 text-sm focus:outline-none"
               type="password"
-              placeholder="รหัสผ่านใหม่ (อย่างน้อย 8 ตัวอักษร)"
+              placeholder="รหัสผ่านใหม่"
               value={pwd}
               onChange={(e) => setPwd(e.target.value)}
+              autoComplete="new-password"
               required
               disabled={loading}
             />
           </div>
+          <PasswordStrength password={pwd} />
           <div className="form-control relative">
             <FaLock className="absolute left-4 top-1/2 -translate-y-1/2 text-base-content/40 z-10" />
             <input
@@ -61,10 +68,14 @@ export default function ResetPasswordPage() {
               placeholder="ยืนยันรหัสผ่านใหม่"
               value={confirm}
               onChange={(e) => setConfirm(e.target.value)}
+              autoComplete="new-password"
               required
               disabled={loading}
             />
           </div>
+          {confirm && confirm !== pwd && (
+            <p className="-mt-2 px-4 text-left text-xs text-error">รหัสผ่านทั้งสองช่องไม่ตรงกัน</p>
+          )}
           <button
             type="submit"
             className="btn btn-primary rounded-full w-full text-white font-semibold mt-4 flex items-center justify-center gap-2"

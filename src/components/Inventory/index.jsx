@@ -14,6 +14,19 @@ import toast from 'react-hot-toast';
 
 const PAGE_SIZE = 50; // จำนวนสินค้าต่อหน้า (แบ่งหน้าเพราะแคตตาล็อกจริงมีหลายพันตัว)
 
+// ตะกร้าใบเบิกเก็บใน sessionStorage แยกตามผู้ใช้
+// เดิมอยู่แค่ใน state ของหน้านี้ — สลับไปหน้าอื่นแล้วกลับมา ของที่หยิบไว้หายหมด
+// sessionStorage อยู่ถึงปิดแท็บ ล้างเมื่อส่งใบเบิกหรือออกจากระบบ (Navbar ล้างให้)
+export const CART_STORAGE_PREFIX = 'wms-cart:';
+const readSavedCart = (key) => {
+  try {
+    const saved = JSON.parse(sessionStorage.getItem(key) || 'null');
+    return saved && Array.isArray(saved.cart) ? saved : null;
+  } catch {
+    return null;
+  }
+};
+
 // ฟังก์ชันดึงรูปภาพ (ถ้าไม่มีรูปให้ใช้รูป SVG เปล่าๆ แทน เพื่อกันพัง)
 const getImg = (url) => {
   if (!url) return "data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSIxMDAiIGhlaWdodD0iMTAwIj48cmVjdCB3aWR0aD0iMTAwJSIgaGVpZ2h0PSIxMDAlIiBmaWxsPSIjZjNmNGY2Ii8+PHRleHQgeD0iNTAlIiB5PSI1MCUiIGZvbnQtc2l6ZT0iMTIiIHRleHQtYW5jaG9yPSJtaWRkbGUiIGFsaWdubWVudC1iYXNlbGluZT0ibWlkZGxlIiBmb250LWZhbWlseT0ic2Fucy1zZXJpZiIgZmlsbD0iIzliOWI5YiI+Tm8gSW1hZ2U8L3RleHQ+PC9zdmc+";
@@ -48,12 +61,15 @@ export default function Inventory() {
     }
   };
 
-  // ระบบตะกร้าสินค้า
-  const [cart, setCart] = useState([]);
+  // ระบบตะกร้าสินค้า — กู้คืนจาก sessionStorage ถ้าเคยหยิบไว้ก่อนสลับหน้า
+  const cartKey = `${CART_STORAGE_PREFIX}${currentUser.username || 'guest'}`;
+  const [savedCart] = useState(() => readSavedCart(cartKey));
+  const [cart, setCart] = useState(() => savedCart?.cart || []);
   const [cartModal, setCartModal] = useState(false);
-  const [reqProject, setReqProject] = useState('');
+  const [reqProject, setReqProject] = useState(() => savedCart?.reqProject || '');
   const [projectList, setProjectList] = useState([]);      // [{id, name}] รายชื่อโปรเจกต์
-  const [selectedProject, setSelectedProject] = useState(''); // ตัวกรอง/โปรเจกต์ปัจจุบันของการเบิก (เติมให้ตะกร้าอัตโนมัติ)
+  // ตัวกรอง/โปรเจกต์ปัจจุบันของการเบิก (เติมให้ตะกร้าอัตโนมัติ) — จำไว้คู่กับตะกร้า เพราะยอด "เบิกได้" ขึ้นกับโปรเจกต์
+  const [selectedProject, setSelectedProject] = useState(() => savedCart?.selectedProject || '');
   const [projectModal, setProjectModal] = useState(false); // modal จัดการโปรเจกต์ (เพิ่ม/ลบ)
   const [newProjectName, setNewProjectName] = useState('');
   const [categoryModal, setCategoryModal] = useState(false); // modal จัดการหมวดหมู่ (เพิ่ม/ลบ/ยุบ)
@@ -64,6 +80,54 @@ export default function Inventory() {
   const isManager = ['Admin', 'Manager'].includes(currentUser.role);
 
   useBodyScrollLock(cartModal || scanOpen || projectModal || categoryModal || !!preview); // freeze พื้นหลังตอนเปิด modal
+
+  // บันทึกตะกร้าทุกครั้งที่เปลี่ยน — ตะกร้าว่าง = ลบทิ้ง (ส่งใบเบิกแล้ว หรือเอาของออกหมด)
+  useEffect(() => {
+    try {
+      if (cart.length === 0) sessionStorage.removeItem(cartKey);
+      else sessionStorage.setItem(cartKey, JSON.stringify({ cart, reqProject, selectedProject }));
+    } catch {
+      // พื้นที่เก็บเต็ม/ถูกปิด — ตะกร้ายังใช้ได้ตามปกติ แค่จะไม่อยู่รอดตอนสลับหน้า
+    }
+  }, [cart, reqProject, selectedProject, cartKey]);
+
+  // ตะกร้าที่กู้คืนมา: ระหว่างที่ออกไปหน้าอื่น ของอาจถูกเบิก/จองไปแล้ว — เช็กยอดเบิกได้ล่าสุดหนึ่งรอบตอนเปิดหน้า
+  // ถ้าไม่เช็ก จำนวนในตะกร้าจะอิงยอดเก่า แล้วไปโดนปฏิเสธตอนกดส่งใบเบิกแทน
+  useEffect(() => {
+    const restored = savedCart?.cart || [];
+    if (restored.length === 0) return undefined;
+    let cancelled = false;
+    (async () => {
+      const notes = [];
+      const fresh = new Map();   // productId → ยอดเบิกได้ล่าสุด (0 = เอาออกจากตะกร้า)
+      await Promise.all(restored.map(async (item) => {
+        try {
+          const query = new URLSearchParams({ search: item.sku, limit: '20' });
+          if (savedCart.selectedProject) query.set('project', savedCart.selectedProject);
+          const json = await fetchApi(`/api/products?${query.toString()}`, { suppressErrorToast: true });
+          const product = (json.products || []).find((p) => p.id === item.productId);
+          const available = product ? Number(product.available ?? product.stock ?? 0) : 0;
+          fresh.set(item.productId, available);
+          if (!product) notes.push(`${item.sku} ไม่มีในระบบแล้ว`);
+          else if (available <= 0) notes.push(`${item.sku} เบิกไม่ได้แล้ว`);
+          else if ((Number(item.quantity) || 1) > available) notes.push(`${item.sku} ลดเหลือ ${available}`);
+        } catch {
+          // เช็กไม่ได้ (เน็ตหลุด) — คงรายการเดิมไว้ เซิร์ฟเวอร์ตรวจยอดซ้ำตอนส่งใบเบิกอยู่แล้ว
+        }
+      }));
+      if (cancelled) return;
+      // อัปเดตแบบ functional — ระหว่างรอผู้ใช้อาจหยิบของเพิ่มไปแล้ว ห้ามทับรายการใหม่
+      setCart((prev) => prev
+        .filter((c) => !fresh.has(c.productId) || fresh.get(c.productId) > 0)
+        .map((c) => {
+          if (!fresh.has(c.productId)) return c;
+          const available = fresh.get(c.productId);
+          return { ...c, stock: available, quantity: Math.min(Number(c.quantity) || 1, available) };
+        }));
+      if (notes.length) toast(`ปรับตะกร้าตามยอดล่าสุด: ${notes.join(' · ')}`, { icon: '🛒', duration: 6000 });
+    })();
+    return () => { cancelled = true; };
+  }, [savedCart]);
 
   // ปิดด้วย Esc สำหรับคนใช้คีย์บอร์ด (มือถือแตะพื้นหลัง)
   useEffect(() => {
