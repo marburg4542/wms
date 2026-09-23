@@ -1739,19 +1739,50 @@ export default function Storage() {
     return true;
   }, [loadFloor, loadRoom]);
 
+  // เลื่อนผังไปยัง "ตำแหน่ง" ที่ระบุ — รองรับของที่วางในห้อง/โซนโดยตรงด้วย (rackId เป็น null)
+  // ซึ่ง gotoRack เดิมไปไม่ได้เลย เพราะเริ่มจาก /api/racks/:id เสมอ
+  const gotoLocation = useCallback(async ({ rackId = null, level = null, roomId = null, planId: targetPlan = null, sku = null, open = true } = {}) => {
+    if (rackId) return gotoRack(rackId, { open, level, sku });
+    if (!roomId) return false;
+    const plan = targetPlan || planId;
+    if (plan) setPlanId(plan);
+    const roomResult = await fetchApi(`/api/rooms?plan=${plan}`).catch(() => ({}));
+    const room = roomResult.success && roomResult.rooms.find((item) => item.id === roomId);
+    if (!room) return false;
+    setCurrentRoom(room);
+    setView('room');
+    await loadRoom(room.id);
+    setHighlight({ rackId: null, level: null, sku });
+    return true;
+  }, [gotoRack, loadRoom, planId]);
+
   useEffect(() => {
     const sku = searchParams.get('highlight');
     if (!sku) return;
+    const locationId = Number(searchParams.get('loc')) || null;
     let alive = true;
     (async () => {
+      // ระบุจุดมาด้วย = ผู้ใช้เลือกเองจากรายการตำแหน่ง ต้องพาไปจุดนั้น ไม่ใช่ตำแหน่งหลัก
+      if (locationId) {
+        const result = await fetchApi(`/api/storage-map/locations/${encodeURIComponent(sku)}`).catch(() => ({}));
+        const picked = result.success && (result.locations || []).find((row) => row.id === locationId);
+        if (!alive) return;
+        if (picked) {
+          await gotoLocation({ rackId: picked.rackId, level: picked.storageLevel, roomId: picked.roomId, planId: picked.planId, sku });
+          return;
+        }
+        // จุดนั้นถูกย้าย/ลบไปแล้วระหว่างทาง — ตกกลับไปที่ตำแหน่งหลักแทนการขึ้น error เปล่าๆ
+      }
       const productResult = await fetchApi(`/api/products?search=${encodeURIComponent(sku)}&limit=1`).catch(() => ({}));
       const product = productResult.success && productResult.products?.[0];
       if (!alive) return;
-      if (!product?.rackId) { toast('สินค้านี้ยังไม่ได้ระบุตำแหน่งจัดเก็บ', { icon: '📍' }); return; }
-      await gotoRack(product.rackId, { level: product.storageLevel || null, sku: product.sku });
+      if (!product?.rackId && !product?.roomId) { toast('สินค้านี้ยังไม่ได้ระบุตำแหน่งจัดเก็บ', { icon: '📍' }); return; }
+      const ok = await gotoLocation({ rackId: product.rackId, level: product.storageLevel || null, roomId: product.roomId, sku: product.sku });
+      // ของที่วางในห้องของคลังอื่น: รายการสินค้าไม่ได้บอกว่าเป็นคลังไหน จึงหาในคลังที่เปิดอยู่ไม่เจอ
+      if (!ok && alive) toast('เปิดตำแหน่งจัดเก็บไม่สำเร็จ — ลองเลือกจากรายการตำแหน่งของสินค้า', { icon: '📍' });
     })();
     return () => { alive = false; };
-  }, [searchParams, gotoRack]);
+  }, [searchParams, gotoLocation]);
 
   // โหลดเส้นทางหยิบของเมื่อเปิดด้วย ?pick=<เลขที่ใบเบิก> แล้วพาไปจุดแวะแรกให้เลย
   useEffect(() => {

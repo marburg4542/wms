@@ -1,5 +1,5 @@
 // src/components/Homepage/index.jsx
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useMemo } from 'react';
 import { useNavigate, Link } from 'react-router-dom';
 import { fetchApi, getAssetUrl } from '../../utils/api';
 import { txTypeLabel, txStatusLabel } from '../../utils/labels';
@@ -8,6 +8,14 @@ import { confirmDialog } from '../../utils/confirm';
 import { DashboardSkeleton } from '../Skeleton';
 import { useBodyScrollLock } from '../../utils/useBodyScrollLock';
 import toast from 'react-hot-toast';
+
+// รายงานแบบ "เลือกเอง" — เพดานวันต้องตรงกับ MAX_REPORT_DAYS ใน server/controllers/reportController.js
+// ไม่งั้นหน้าเว็บปล่อยให้กดดาวน์โหลด แล้วเซิร์ฟเวอร์เพิ่งมาปฏิเสธทีหลัง
+const MAX_REPORT_DAYS = 62;
+const DAY_MS = 24 * 60 * 60 * 1000;
+const dayStart = (ymd) => new Date(`${ymd}T00:00:00`);   // เที่ยงคืนตามเวลาเครื่อง เหมือนที่เซิร์ฟเวอร์คำนวณ
+const addDays = (date, amount) => { const next = new Date(date); next.setDate(next.getDate() + amount); return next; };
+const thaiShort = (ymd) => dayStart(ymd).toLocaleDateString('th-TH', { day: 'numeric', month: 'short' });
 
 // ฟังก์ชันดึงรูปภาพแบบเดียวกับหน้า Inventory
 const getImg = (url) => {
@@ -57,6 +65,11 @@ export default function Homepage() {
   const offset = new Date().getTimezoneOffset() * 60000;
   const todayStr = new Date(Date.now() - offset).toISOString().slice(0, 10);
   const [exportValue, setExportValue] = useState(todayStr);
+  // โหมด "เลือกเอง": วันเดี่ยวกับช่วงเก็บแยกกัน เพราะส่งขึ้น API คนละคีย์
+  const [exportDays, setExportDays] = useState([]);                              // ['YYYY-MM-DD', ...]
+  const [exportRanges, setExportRanges] = useState([]);                          // [{ from, to }]
+  const [dayDraft, setDayDraft] = useState(todayStr);
+  const [rangeDraft, setRangeDraft] = useState({ from: todayStr, to: todayStr });
   // ข้อมูลสำหรับ export ดึงแยกตามช่วงเวลาที่เลือก ไม่แบกประวัติทั้งหมดมากับ dashboard
   const [exportLogs, setExportLogs] = useState([]);
   const [exportLoading, setExportLoading] = useState(false);
@@ -121,13 +134,40 @@ export default function Homepage() {
     return localDate === todayStr;
   });
 
+  // วันและช่วงที่เลือกไว้ รวมช่วงที่ซ้อนกันให้เหลือช่วงเดียว (กติกาเดียวกับ resolveRanges ฝั่งเซิร์ฟเวอร์)
+  const exportSpans = useMemo(() => {
+    const picked = [
+      ...exportDays.map((day) => ({ start: dayStart(day), end: addDays(dayStart(day), 1) })),
+      ...exportRanges.map((range) => ({ start: dayStart(range.from), end: addDays(dayStart(range.to), 1) }))
+    ].sort((a, b) => a.start - b.start);
+    const merged = [];
+    for (const span of picked) {
+      const last = merged[merged.length - 1];
+      if (last && span.start <= last.end) {
+        if (span.end > last.end) last.end = span.end;
+        continue;
+      }
+      merged.push({ ...span });
+    }
+    return merged;
+  }, [exportDays, exportRanges]);
+  const exportDayCount = exportSpans.reduce((sum, span) => sum + Math.round((span.end - span.start) / DAY_MS), 0);
+  const overDayLimit = exportDayCount > MAX_REPORT_DAYS;
+
   // ดึงข้อมูล export จาก server ตามช่วงเวลาที่เลือก (เฉพาะตอน modal เปิดอยู่)
   useEffect(() => {
-    if (!exportModalOpen || !exportValue) return;
+    if (!exportModalOpen) return;
 
     let start = null;
     let end = null;
-    if (exportType === 'day') {
+    if (exportType === 'custom') {
+      // ยิงครั้งเดียวครอบตั้งแต่วันแรกถึงวันสุดท้าย แล้วค่อยคัดวันที่ไม่ได้เลือกออกตอนนับ
+      if (exportSpans.length === 0) { setExportLogs([]); return; }
+      start = exportSpans[0].start;
+      end = exportSpans[exportSpans.length - 1].end;
+    } else if (!exportValue) {
+      return;
+    } else if (exportType === 'day') {
       start = new Date(`${exportValue}T00:00:00`);
       end = new Date(start); end.setDate(end.getDate() + 1);
     } else if (exportType === 'month') {
@@ -146,12 +186,21 @@ export default function Homepage() {
       .catch(err => console.warn('โหลดข้อมูล export ล้มเหลว', err))
       .finally(() => { if (!cancelled) setExportLoading(false); });
     return () => { cancelled = true; };
-  }, [exportModalOpen, exportType, exportValue]);
+  }, [exportModalOpen, exportType, exportValue, exportSpans]);
 
   // ตัวเลือกโปรเจกต์สำหรับ dropdown กรอง — อิงรายชื่อในหน้าจัดการสินค้าคงคลัง (ตาราง projects)
   const exportProjectOptions = projectList.map(p => p.name);
 
+  // โหมดเลือกเอง: ดึงมาครอบกว้างแล้วคัดเฉพาะใบที่ตกวันที่เลือกจริง
+  // ต้องยึด resolvedDate ก่อน requestDate ให้ตรงกับเงื่อนไขที่ SQL ใช้ ไม่งั้นตัวเลขที่เห็นตรงนี้จะไม่ตรงกับในไฟล์
+  const inSelectedDays = (t) => {
+    if (exportType !== 'custom') return true;
+    const stamp = new Date(t.resolvedDate || t.requestDate).getTime();
+    return exportSpans.some((span) => stamp >= span.start.getTime() && stamp < span.end.getTime());
+  };
+
   const exportFilteredLogs = exportLogs
+    .filter(inSelectedDays)
     .filter(t => (t.status !== 'Pending' || t.type === 'INBOUND') && !isWaitingPickup(t))
     .filter(t => exportTypeFilter === 'all' || t.type === exportTypeFilter)              // กรอง นำเข้า/เบิกออก
     .filter(t => exportProjectFilter === 'all' || exportTypeFilter === 'INBOUND' || (t.project || '') === exportProjectFilter) // กรองโปรเจกต์ (นำเข้าไม่มีโปรเจกต์ จึงข้าม)
@@ -320,6 +369,24 @@ export default function Homepage() {
     if (type === 'day') setExportValue(todayStr);
     if (type === 'month') setExportValue(todayStr.slice(0, 7));
     if (type === 'year') setExportValue(todayStr.slice(0, 4));
+    if (type === 'custom') {
+      setExportDays([]);
+      setExportRanges([]);
+      setDayDraft(todayStr);
+      setRangeDraft({ from: todayStr, to: todayStr });
+    }
+  };
+
+  const addExportDay = () => {
+    if (!dayDraft) return;
+    setExportDays((prev) => (prev.includes(dayDraft) ? prev : [...prev, dayDraft].sort()));
+  };
+
+  const addExportRange = () => {
+    const { from, to } = rangeDraft;
+    if (!from || !to) return;
+    const [start, end] = from <= to ? [from, to] : [to, from];   // ใส่กลับด้านก็รับได้
+    setExportRanges((prev) => (prev.some((r) => r.from === start && r.to === end) ? prev : [...prev, { from: start, to: end }]));
   };
 
   // โหลดรูปสินค้าเป็น PNG dataURL (ผ่าน canvas เพื่อรองรับ jpg/png/webp และปรับขนาดให้เท่ากัน)
@@ -331,6 +398,7 @@ export default function Homepage() {
   // เซิร์ฟเวอร์เรนเดอร์แล้วส่งเป็นไฟล์แนบจึงได้ทั้งภาษาไทยถูกและดาวน์โหลดได้ทุกอุปกรณ์
   const executeServerExport = async () => {
     if (exportFilteredLogs.length === 0) return toast.error('ไม่มีข้อมูลในช่วงเวลาที่เลือก');
+    if (exportType === 'custom' && overDayLimit) return toast.error(`เลือกได้ไม่เกิน ${MAX_REPORT_DAYS} วันต่อรายงาน`);
 
     setExporting(true);
     toast.loading('กำลังสร้างไฟล์ PDF...', { id: 'pdf-toast' });
@@ -341,7 +409,8 @@ export default function Homepage() {
           type: exportType,
           value: exportValue,
           typeFilter: exportTypeFilter,
-          projectFilter: exportProjectFilter
+          projectFilter: exportProjectFilter,
+          ...(exportType === 'custom' ? { days: exportDays, ranges: exportRanges } : {})
         })
       });
       if (res.success) {
@@ -770,14 +839,59 @@ export default function Homepage() {
                   <option value="day">รายวัน</option>
                   <option value="month">รายเดือน</option>
                   <option value="year">รายปี</option>
+                  <option value="custom">เลือกเอง (หลายวัน/ช่วง)</option>
                 </select>
               </div>
-              <div className="form-control">
-                <label className="label text-sm font-bold">ระบุ {exportType === 'day' ? 'วันที่' : exportType === 'month' ? 'เดือน' : 'ปี'}</label>
-                {exportType === 'day' && <input type="date" className="input input-bordered w-full" value={exportValue} onChange={e => setExportValue(e.target.value)} />}
-                {exportType === 'month' && <input type="month" className="input input-bordered w-full" value={exportValue} onChange={e => setExportValue(e.target.value)} />}
-                {exportType === 'year' && <input type="number" min="2020" max="2100" className="input input-bordered w-full" value={exportValue} onChange={e => setExportValue(e.target.value)} />}
-              </div>
+              {exportType === 'custom' ? (
+                <div className="form-control gap-2">
+                  <label className="label text-sm font-bold pb-0">เลือกวันที่ต้องการ</label>
+                  <div className="flex items-end gap-2">
+                    <input type="date" className="input input-bordered input-sm flex-1" value={dayDraft} max={todayStr}
+                      onChange={e => setDayDraft(e.target.value)} aria-label="วันที่ต้องการเพิ่ม" />
+                    <button type="button" className="btn btn-sm btn-outline btn-primary" onClick={addExportDay}>+ เพิ่มวัน</button>
+                  </div>
+                  <div className="flex items-end gap-2">
+                    <input type="date" className="input input-bordered input-sm flex-1" value={rangeDraft.from} max={todayStr}
+                      onChange={e => setRangeDraft(r => ({ ...r, from: e.target.value }))} aria-label="ช่วงวันที่เริ่ม" />
+                    <span className="pb-2 text-xs opacity-60">ถึง</span>
+                    <input type="date" className="input input-bordered input-sm flex-1" value={rangeDraft.to} max={todayStr}
+                      onChange={e => setRangeDraft(r => ({ ...r, to: e.target.value }))} aria-label="ช่วงวันที่สิ้นสุด" />
+                    <button type="button" className="btn btn-sm btn-outline btn-primary" onClick={addExportRange}>+ ช่วง</button>
+                  </div>
+                  {(exportDays.length > 0 || exportRanges.length > 0) && (
+                    <div className="flex flex-wrap gap-1.5 pt-1">
+                      {exportDays.map(day => (
+                        <span key={day} className="badge badge-primary badge-outline gap-1">
+                          {thaiShort(day)}
+                          <button type="button" className="hover:text-error" aria-label={`เอา ${day} ออก`}
+                            onClick={() => setExportDays(prev => prev.filter(d => d !== day))}>✕</button>
+                        </span>
+                      ))}
+                      {exportRanges.map(range => (
+                        <span key={`${range.from}_${range.to}`} className="badge badge-secondary badge-outline gap-1">
+                          {thaiShort(range.from)}–{thaiShort(range.to)}
+                          <button type="button" className="hover:text-error" aria-label={`เอาช่วง ${range.from} ถึง ${range.to} ออก`}
+                            onClick={() => setExportRanges(prev => prev.filter(r => !(r.from === range.from && r.to === range.to)))}>✕</button>
+                        </span>
+                      ))}
+                    </div>
+                  )}
+                  <p className={`text-xs ${overDayLimit ? 'text-error font-semibold' : 'opacity-60'}`}>
+                    {exportSpans.length === 0
+                      ? 'ยังไม่ได้เลือกวัน — เพิ่มวันหรือช่วงอย่างน้อย 1 รายการ'
+                      : overDayLimit
+                        ? `เลือกไว้ ${exportDayCount} วัน เกินเพดาน ${MAX_REPORT_DAYS} วันต่อรายงาน`
+                        : `เลือกไว้ ${exportDayCount} วัน (วันที่ซ้อนกันนับครั้งเดียว)`}
+                  </p>
+                </div>
+              ) : (
+                <div className="form-control">
+                  <label className="label text-sm font-bold">ระบุ {exportType === 'day' ? 'วันที่' : exportType === 'month' ? 'เดือน' : 'ปี'}</label>
+                  {exportType === 'day' && <input type="date" className="input input-bordered w-full" value={exportValue} onChange={e => setExportValue(e.target.value)} />}
+                  {exportType === 'month' && <input type="month" className="input input-bordered w-full" value={exportValue} onChange={e => setExportValue(e.target.value)} />}
+                  {exportType === 'year' && <input type="number" min="2020" max="2100" className="input input-bordered w-full" value={exportValue} onChange={e => setExportValue(e.target.value)} />}
+                </div>
+              )}
               <div className="grid grid-cols-2 gap-3">
                 <div className="form-control">
                   <label className="label text-sm font-bold">ประเภทรายการ</label>
@@ -804,7 +918,8 @@ export default function Homepage() {
             </div>
             <div className="flex justify-end gap-3 pt-4 border-t border-base-200">
               <button className="btn btn-ghost" onClick={() => setExportModalOpen(false)} disabled={exporting}>ยกเลิก</button>
-              <button className="btn btn-primary text-white" onClick={executeServerExport} disabled={exporting || exportLoading || exportFilteredLogs.length === 0}>
+              <button className="btn btn-primary text-white" onClick={executeServerExport}
+                disabled={exporting || exportLoading || exportFilteredLogs.length === 0 || (exportType === 'custom' && (exportSpans.length === 0 || overDayLimit))}>
                 {exporting && <span className="loading loading-spinner loading-xs"></span>}
                 ดาวน์โหลดไฟล์ PDF
               </button>

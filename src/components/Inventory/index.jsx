@@ -1,12 +1,13 @@
 // src/components/Inventory/index.jsx
 import React, { useState, useEffect, useCallback, useRef } from 'react';
-import { useSearchParams, Link } from 'react-router-dom';
+import { useSearchParams } from 'react-router-dom';
 import { fetchApi, getAssetUrl } from '../../utils/api';
 import { locationLabel, stockStatusLabel, stockStatusTone } from '../../utils/labels';
 import { onServerEvent } from '../../utils/events';
 import BarcodeScanner from '../BarcodeScanner';
 import { isCameraScanDevice } from '../../utils/device';
 import { ListSkeleton } from '../Skeleton';
+import LocationPicker from '../LocationPicker';
 import { useBodyScrollLock } from '../../utils/useBodyScrollLock';
 import { parseScannedCode } from '../../utils/qr';
 import { confirmDialog } from '../../utils/confirm';
@@ -229,6 +230,7 @@ export default function Inventory() {
       sku: item.sku,
       name: item.name || item.productName,
       location: locationLabel(item),
+      locationCount: Number(item.locationCount || 0),
       stock: fromCart ? null : item.stock,
       available: availableOf(item),
     });
@@ -492,7 +494,7 @@ export default function Inventory() {
                       </td>
                       <td className="font-mono text-xs font-semibold">
                         {item.sku}
-                        {locationLabel(item) && <Link to={`/storage?highlight=${item.sku}`} className="ml-1" title={`ตำแหน่ง: ${locationLabel(item)}`}>📍</Link>}
+                        {locationLabel(item) && <LocationPicker sku={item.sku} locationCount={item.locationCount} label={locationLabel(item)} />}
                       </td>
                       <td className="text-sm font-medium">{item.name}</td>
                       <td className="text-xs opacity-70">{item.groupId} — {item.groupName || 'Default'}</td>
@@ -535,7 +537,7 @@ export default function Inventory() {
                   <div className="flex-1 min-w-0">
                     <p className="font-medium text-sm truncate">{item.name}</p>
                     <p className="font-mono text-xs opacity-60">{item.sku} · {item.groupId}</p>
-                    {locationLabel(item) && <Link to={`/storage?highlight=${item.sku}`} className="text-[10px] text-primary">📍 {locationLabel(item)}</Link>}
+                    {locationLabel(item) && <LocationPicker sku={item.sku} locationCount={item.locationCount} label={locationLabel(item)} variant="text" />}
                     <div className="flex items-center gap-2 mt-1">
                       <span className="text-sm font-bold">คงเหลือ {item.stock}</span>
                       <span className="text-[11px] text-warning">
@@ -800,7 +802,11 @@ export default function Inventory() {
                 {preview.stock !== null && <span className="opacity-80">คงเหลือ <b className="text-sm">{preview.stock}</b></span>}
                 <span className={preview.available > 0 ? 'text-success' : 'text-error'}>เบิกได้ <b className="text-sm">{preview.available}</b></span>
               </p>
-              {preview.location && <p className="text-xs opacity-70 mt-1">📍 {preview.location}</p>}
+              {preview.location && (
+                <p className="text-xs opacity-70 mt-1">
+                  <LocationPicker sku={preview.sku} locationCount={preview.locationCount} label={preview.location} variant="text" />
+                </p>
+              )}
             </div>
           </div>
         </div>

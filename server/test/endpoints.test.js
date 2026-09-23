@@ -439,6 +439,64 @@ test('ตัวกรองรายการใหม่: เลือกย้
   assert.ok(!fallbackSkus.includes(late.sku), 'และต้องไม่เผลอแสดงของวันที่พิมพ์เพี้ยนนั้น');
 });
 
+test('ตัวกรองรายการใหม่: เลือกเป็นช่วงวันที่ได้ และใส่กลับด้านก็ยังได้ผลเดิม', async () => {
+  const threeDaysAgo = db.prepare("SELECT date('now', '-3 day', 'localtime') AS d").get().d;
+  const twoDaysAgo = db.prepare("SELECT date('now', '-2 day', 'localtime') AS d").get().d;
+  const fiveDaysAgo = db.prepare("SELECT date('now', '-5 day', 'localtime') AS d").get().d;
+  const backdate = db.prepare("UPDATE items SET created_at = datetime(? || ' ' || '10:00:00', 'utc') WHERE item_id = ?");
+
+  const inRangeEarly = await callOk('createProduct', products.createProduct, {
+    body: { name: 'ของในช่วง วันแรก', groupId: '01', groupName: 'ทดสอบ', unit: 'ชิ้น' }
+  });
+  const inRangeLate = await callOk('createProduct', products.createProduct, {
+    body: { name: 'ของในช่วง วันหลัง', groupId: '01', groupName: 'ทดสอบ', unit: 'ชิ้น' }
+  });
+  const outOfRange = await callOk('createProduct', products.createProduct, {
+    body: { name: 'ของนอกช่วง', groupId: '01', groupName: 'ทดสอบ', unit: 'ชิ้น' }
+  });
+  backdate.run(threeDaysAgo, inRangeEarly.sku);
+  backdate.run(twoDaysAgo, inRangeLate.sku);
+  backdate.run(fiveDaysAgo, outOfRange.sku);
+
+  const inRange = (result) => {
+    const skus = result.products.map((item) => item.sku);
+    assert.ok(skus.includes(inRangeEarly.sku) && skus.includes(inRangeLate.sku), 'ของทั้งสองวันในช่วงต้องมาครบ');
+    assert.ok(!skus.includes(outOfRange.sku), 'ของนอกช่วงต้องไม่ติดมา');
+    assert.equal(result.totalItems, skus.length, 'ตัวเลขบนป้ายต้องนับด้วยเงื่อนไขเดียวกัน');
+    return skus;
+  };
+
+  const skus = inRange(await callOk('getProducts', products.getProducts, {
+    query: { limit: '500', newToday: 'true', newFrom: threeDaysAgo, newTo: twoDaysAgo }
+  }));
+  assert.ok(skus.indexOf(inRangeLate.sku) < skus.indexOf(inRangeEarly.sku), 'ในช่วงเดียวกันตัวล่าสุดต้องขึ้นก่อน');
+
+  // ใส่กลับด้าน (จาก 2 วันก่อน ถึง 3 วันก่อน) ต้องได้ผลเหมือนกัน ไม่ใช่รายการเปล่า
+  inRange(await callOk('getProducts', products.getProducts, {
+    query: { limit: '500', newToday: 'true', newFrom: twoDaysAgo, newTo: threeDaysAgo }
+  }));
+
+  // ปลายช่วงพิมพ์เพี้ยน → ถือว่าไม่ได้เลือกช่วง ตกกลับไปใช้วันเดี่ยวตามเดิม
+  const single = await callOk('getProducts', products.getProducts, {
+    query: { limit: '500', newToday: 'true', newDate: threeDaysAgo, newTo: 'เมื่อวาน' }
+  });
+  const singleSkus = single.products.map((item) => item.sku);
+  assert.ok(singleSkus.includes(inRangeEarly.sku) && !singleSkus.includes(inRangeLate.sku));
+});
+
+// ---- จำนวนจุดที่วางของ (ใช้ตัดสินว่าต้องให้เลือกตำแหน่งก่อนพาไปผังคลังไหม) ----
+test('รายการสินค้า: บอกจำนวนจุดที่มีของวางอยู่จริง', async () => {
+  const list = await callOk('getProducts', products.getProducts, { query: { limit: '500' } });
+  const spread = list.products.find((item) => item.sku === sku);
+  assert.equal(spread.locationCount, 3, 'ของทดสอบถูกกระจายไว้ 3 ที่ (ชั้นวาง/พื้นที่วางพื้น/พื้นที่จัดเตรียม)');
+
+  const placedRows = db.prepare('SELECT COUNT(*) AS n FROM item_locations WHERE item_id = ? AND quantity > 0').get(sku).n;
+  assert.equal(spread.locationCount, placedRows, 'ต้องนับเฉพาะจุดที่ยังมีของเหลืออยู่');
+
+  const untouched = list.products.find((item) => item.locationCount === 0);
+  assert.ok(untouched, 'สินค้าที่ยังไม่ได้ผูกตำแหน่งต้องเป็น 0 ไม่ใช่ null');
+});
+
 // ---- เลือกผู้รับแจ้งเตือนตามบทบาท ----
 test('แจ้งเตือนตามบทบาท: ส่งเฉพาะบัญชีที่ใช้งานอยู่ และไม่ส่งกลับหาคนที่เป็นต้นเหตุ', async () => {
   const add = db.prepare("INSERT INTO app_users (username, email, password, role, status) VALUES (?, ?, 'x', ?, ?)");

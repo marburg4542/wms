@@ -42,6 +42,7 @@ const mapProduct = (row) => {
     storageLevel: row.storageLevel ?? null,
     roomId: row.primaryRoomId ?? null,             // ของที่วางในห้อง/โซนโดยตรง (ไม่ได้อยู่บนชั้นวาง)
     roomName: row.roomName || null,
+    locationCount: Number(row.locationCount ?? 0),  // วางอยู่กี่จุด — มากกว่า 1 หน้าเว็บจะให้เลือกก่อนพาไป
     status: stock > minStock ? 'Active' : (stock > 0 ? 'Low Stock' : 'Out of Stock')
   };
 };
@@ -75,9 +76,14 @@ export const getProducts = (req, res) => {
     const discrepancy = req.query.discrepancy === 'true';   // แสดงเฉพาะสินค้าที่ยอดคลาดเคลื่อน (ติดลบ = เป็นไปไม่ได้ทางกายภาพ)
     const newToday = req.query.newToday === 'true';         // แสดงเฉพาะสินค้าที่เพิ่มเข้าระบบวันนี้ (ไว้ตรวจงานประจำวัน)
     // เลือกย้อนวันได้ — รับเฉพาะ YYYY-MM-DD ถ้าเพี้ยนให้ตกกลับไปเป็น "วันนี้" ไม่ใช่คืนรายการเปล่าแบบไม่บอกสาเหตุ
-    const newDateRaw = String(req.query.newDate || '').trim();
-    const newDate = /^\d{4}-\d{2}-\d{2}$/.test(newDateRaw) ? newDateRaw : '';
-    const newItems = newToday || Boolean(newDate);
+    const asDate = (value) => (/^\d{4}-\d{2}-\d{2}$/.test(String(value || '').trim()) ? String(value).trim() : '');
+    const newDate = asDate(req.query.newDate);
+    // ช่วงวันที่ — ใส่กลับด้านมาก็สลับให้ ผู้ใช้จะได้ไม่เจอรายการเปล่าโดยไม่รู้สาเหตุ
+    const fromRaw = asDate(req.query.newFrom);
+    const toRaw = asDate(req.query.newTo);
+    const [newFrom, newTo] = fromRaw && toRaw && fromRaw > toRaw ? [toRaw, fromRaw] : [fromRaw, toRaw];
+    const newRange = Boolean(newFrom && newTo);
+    const newItems = newToday || Boolean(newDate) || newRange;
     const group = String(req.query.group || '').trim();
 
     // กรองสถานะใช้งานทั้งหมดที่ฝั่ง server เพื่อให้แบ่งหน้าถูกต้อง (ไม่งั้นกรอง client จะเห็นแค่หน้าปัจจุบัน)
@@ -104,7 +110,11 @@ export const getProducts = (req, res) => {
     if (newItems) {
       // เทียบสตริงวันที่ตรงๆ — ค่าจาก <input type="date"> เป็นวันที่ตามปฏิทินเครื่องอยู่แล้ว
       // ถ้าเอาไปเข้า date(@newDate, 'localtime') อีกทีจะโดนเลื่อนโซนเวลาซ้ำสอง แล้วของช่วงเช้ามืดหลุดไปอีกวัน
-      if (newDate) {
+      if (newRange) {
+        whereParts.push("date(i.created_at, 'localtime') BETWEEN @newFrom AND @newTo");
+        params.newFrom = newFrom;
+        params.newTo = newTo;
+      } else if (newDate) {
         whereParts.push("date(i.created_at, 'localtime') = @newDate");
         params.newDate = newDate;
       } else {
@@ -149,6 +159,8 @@ export const getProducts = (req, res) => {
         i.storage_level AS storageLevel,
         i.primary_room_id AS primaryRoomId,
         rm.name AS roomName,
+        -- จำนวนจุดที่มีของวางอยู่จริง — หน้ารายการใช้ตัดสินว่าต้องให้เลือกตำแหน่งก่อนพาไปผังคลังไหม
+        (SELECT COUNT(*) FROM item_locations il WHERE il.item_id = i.item_id AND il.quantity > 0) AS locationCount,
         wb.warning
       FROM items i
       LEFT JOIN warehouse_balance wb ON i.item_id = wb.item_id

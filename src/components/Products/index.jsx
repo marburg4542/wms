@@ -71,7 +71,8 @@ export default function Products() {
   const [showInactive, setShowInactive] = useState(false);
   const [discrepancyOnly, setDiscrepancyOnly] = useState(false); // แสดงเฉพาะสินค้ายอดคลาดเคลื่อน (ติดลบ)
   const [newTodayOnly, setNewTodayOnly] = useState(false);       // แสดงเฉพาะสินค้าที่เพิ่มวันนี้ (ไว้ตรวจข้อมูลประจำวัน)
-  const [newDate, setNewDate] = useState(todayLocal);            // วันที่ของตัวกรองด้านบน — ย้อนไปดูวันก่อนๆ ได้
+  const [newDate, setNewDate] = useState(todayLocal);
+  const [newDateTo, setNewDateTo] = useState(todayLocal);   // เท่ากับ newDate = ดูวันเดียว, ต่างกัน = ดูเป็นช่วง            // วันที่ของตัวกรองด้านบน — ย้อนไปดูวันก่อนๆ ได้
   const [scanOpen, setScanOpen] = useState(false);
   const searchInputRef = useRef(null);
 
@@ -131,7 +132,13 @@ export default function Products() {
       if (discrepancyOnly) query.set('discrepancy', 'true');
       if (newTodayOnly) {
         query.set('newToday', 'true');
-        if (newDate) query.set('newDate', newDate); // ไม่ส่ง = ให้ server ถือว่าวันนี้
+        // เลือกเป็นช่วง (วันปลายทางไม่ใช่วันเดียวกับต้นทาง) ส่ง newFrom/newTo แทนวันเดี่ยว
+        if (newDateTo && newDateTo !== newDate) {
+          query.set('newFrom', newDate);
+          query.set('newTo', newDateTo);
+        } else if (newDate) {
+          query.set('newDate', newDate); // ไม่ส่ง = ให้ server ถือว่าวันนี้
+        }
       }
       const json = await fetchApi(`/api/products?${query.toString()}`);
       // ถ้ามีคำขอใหม่กว่ายิงตามมาแล้ว ให้ทิ้ง response เก่านี้ ไม่เอามาอัปเดตจอ
@@ -146,10 +153,10 @@ export default function Products() {
     } finally {
       if (reqId === reqIdRef.current && !silent) setLoading(false);
     }
-  }, [searchTerm, groupFilter, showInactive, lowStockOnly, discrepancyOnly, newTodayOnly, newDate, page]);
+  }, [searchTerm, groupFilter, showInactive, lowStockOnly, discrepancyOnly, newTodayOnly, newDate, newDateTo, page]);
 
   // เปลี่ยนตัวกรอง → กลับไปหน้า 1 เสมอ
-  useEffect(() => { setPage(1); }, [searchTerm, groupFilter, showInactive, lowStockOnly, discrepancyOnly, newTodayOnly, newDate]);
+  useEffect(() => { setPage(1); }, [searchTerm, groupFilter, showInactive, lowStockOnly, discrepancyOnly, newTodayOnly, newDate, newDateTo]);
 
   useEffect(() => {
     fetchApi('/api/product-groups')
@@ -583,7 +590,7 @@ export default function Products() {
     setNewTodayOnly(next);
     // รีเซ็ตวันตอน "เปิด" ไม่ใช่ตอนปิด — ปุ่มกรองอีก 3 ตัวปิดตัวนี้เองโดยไม่ผ่านฟังก์ชันนี้
     // ถ้าไปดีดตอนปิด สลับไปสต็อกต่ำแล้วกลับมาจะค้างอยู่ที่วันเก่าโดยไม่รู้ตัว
-    if (next) { clearLowStock(); setDiscrepancyOnly(false); setShowInactive(false); setNewDate(todayLocal()); }
+    if (next) { clearLowStock(); setDiscrepancyOnly(false); setShowInactive(false); setNewDate(todayLocal()); setNewDateTo(todayLocal()); }
   };
 
   // ค้นหา/กรองสถานะ/สต็อกต่ำ/แบ่งหน้า ทำที่ server แล้ว — แสดงตามที่ได้มาตรงๆ
@@ -658,8 +665,22 @@ export default function Products() {
               title="เลือกวันที่เพิ่มเข้าระบบ"
               aria-label="วันที่เพิ่มเข้าระบบ"
             />
+            <span className="text-xs opacity-60">ถึง</span>
+            {/* วันปลายทางเท่ากับวันต้นทาง = ดูวันเดียวเหมือนเดิม ไม่ต้องมีสวิตช์แยกโหมด */}
+            <input
+              type="date"
+              className="input input-bordered input-sm"
+              value={newDateTo}
+              min={newDate}
+              max={todayLocal()}
+              onChange={(event) => setNewDateTo(event.target.value || newDate)}
+              title="ถึงวันที่ (เลือกวันเดียวกับช่องแรก = ดูแค่วันนั้น)"
+              aria-label="ถึงวันที่เพิ่มเข้าระบบ"
+            />
             <span className="badge badge-info badge-outline gap-1">
-              {newDate === todayLocal() ? 'เพิ่มวันนี้' : `เพิ่ม ${thaiDate(newDate)}`} {totalItems.toLocaleString()} รายการ
+              {newDateTo && newDateTo !== newDate
+                ? `เพิ่ม ${thaiDate(newDate)} – ${thaiDate(newDateTo)}`
+                : newDate === todayLocal() ? 'เพิ่มวันนี้' : `เพิ่ม ${thaiDate(newDate)}`} {totalItems.toLocaleString()} รายการ
             </span>
           </div>
         )}

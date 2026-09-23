@@ -92,12 +92,21 @@ const getCurrentStock = (itemId) => {
 // ดึงใบเบิกพร้อมรายการสินค้า — กรองจากฝั่งฐานข้อมูลเพื่อไม่ต้องแบกประวัติทั้งหมดทุกครั้ง
 // includeActive = รวมใบที่ยังค้างอยู่ (รออนุมัติ/รอส่งมอบ) โดยไม่สนช่วงเวลา
 // since/until   = ช่วงเวลาของ COALESCE(resolvedDate, requestDate) แบบ ISO string
-export const getFullTransactions = ({ includeActive = false, since = null, until = null } = {}) => {
+// ranges        = หลายช่วงพร้อมกัน [{ since, until }] ต่อกันด้วย OR — รายงานที่เลือกวันแบบกระจาย
+//                 (เช่น วันที่ 3, 7, 15) จะได้ยิง SQL รอบเดียว ไม่ต้องดึงทีละช่วงแล้วมารวมใบซ้ำกันเอง
+export const getFullTransactions = ({ includeActive = false, since = null, until = null, ranges = null } = {}) => {
   const params = {};
-  const timeConds = [];
-  if (since) { timeConds.push('COALESCE(t.resolvedDate, t.requestDate) >= @since'); params.since = since; }
-  if (until) { timeConds.push('COALESCE(t.resolvedDate, t.requestDate) < @until'); params.until = until; }
-  const timeSql = timeConds.join(' AND ');
+  const spans = Array.isArray(ranges) && ranges.length > 0 ? ranges : [{ since, until }];
+  const spanSqls = [];
+  spans.forEach((span, index) => {
+    const conds = [];
+    if (span?.since) { conds.push(`COALESCE(t.resolvedDate, t.requestDate) >= @since${index}`); params[`since${index}`] = span.since; }
+    if (span?.until) { conds.push(`COALESCE(t.resolvedDate, t.requestDate) < @until${index}`); params[`until${index}`] = span.until; }
+    if (conds.length > 0) spanSqls.push(conds.join(' AND '));
+  });
+  const timeSql = spanSqls.length > 1
+    ? spanSqls.map((sql) => `(${sql})`).join(' OR ')
+    : (spanSqls[0] || '');
   const activeSql = `(t.status = 'Pending' OR (t.type = 'OUTBOUND' AND t.status IN ('Approved', 'Partial') AND t.pickedUpAt IS NULL))`;
 
   let whereSql = '';

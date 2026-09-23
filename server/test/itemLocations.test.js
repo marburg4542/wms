@@ -15,8 +15,8 @@ const makeDb = () => {
   const db = new Database(':memory:');
   db.exec(`
     CREATE TABLE items (item_id TEXT PRIMARY KEY, rack_id INTEGER, storage_level INTEGER, primary_room_id INTEGER);
-    CREATE TABLE rooms (id INTEGER PRIMARY KEY, name TEXT, deleted_at TEXT);
-    CREATE TABLE storage_racks (id INTEGER PRIMARY KEY, name TEXT, levels INTEGER, room_id INTEGER, deleted_at TEXT);
+    CREATE TABLE rooms (id INTEGER PRIMARY KEY, name TEXT, plan_id INTEGER, deleted_at TEXT);
+    CREATE TABLE storage_racks (id INTEGER PRIMARY KEY, name TEXT, levels INTEGER, room_id INTEGER, plan_id INTEGER, is_floor INTEGER DEFAULT 0, deleted_at TEXT);
     CREATE TABLE item_locations (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       item_id TEXT NOT NULL, rack_id INTEGER, storage_level INTEGER, room_id INTEGER,
@@ -27,8 +27,8 @@ const makeDb = () => {
     );
     CREATE VIEW warehouse_balance AS SELECT 'HAMMER' AS item_id, 5 AS stock_balance;
     INSERT INTO items (item_id) VALUES ('HAMMER');
-    INSERT INTO rooms (id, name) VALUES (1, 'โซนจัดเตรียม TAI');
-    INSERT INTO storage_racks (id, name, levels) VALUES (10, 'A1', 3), (11, 'A2', 3);
+    INSERT INTO rooms (id, name, plan_id) VALUES (1, 'โซนจัดเตรียม TAI', 7), (2, 'ห้องเก็บของ 1', 7);
+    INSERT INTO storage_racks (id, name, levels, room_id, plan_id, is_floor) VALUES (10, 'A1', 3, 2, 7, 0), (11, 'A2', 3, NULL, 7, 1);
   `);
   return db;
 };
@@ -45,6 +45,25 @@ test('วางของที่ชั้นวางแล้วอ่าน�
   assert.equal(result.placed, 4);
   assert.equal(result.unplaced, 1, 'เหลืออีก 1 ที่ยังไม่ได้ระบุตำแหน่ง');
   assert.equal(result.locations.length, 1);
+});
+
+// หน้าเว็บต้องพาผู้ใช้ไปยังจุดที่เลือกได้เลย จึงต้องรู้ว่าจุดนั้นอยู่คลังไหน ห้องไหน และเป็นพื้นที่วางพื้นหรือไม่
+test('รายการตำแหน่งบอกคลัง/ห้อง/ชนิดของชั้นวางมาด้วย', () => {
+  const db = makeDb();
+  setLocationQuantity(db, { itemId: 'HAMMER', rackId: 10, storageLevel: 1, quantity: 3 });   // ชั้นวางในห้อง
+  setLocationQuantity(db, { itemId: 'HAMMER', rackId: 11, storageLevel: 1, quantity: 1 });   // พื้นที่วางพื้น (ไม่อยู่ในห้อง)
+  setLocationQuantity(db, { itemId: 'HAMMER', roomId: 1, quantity: 1 });                     // วางในโซนโดยตรง
+  const byRack = Object.fromEntries(getItemLocations(db, 'HAMMER').locations.map((row) => [row.rackId ?? `room${row.roomId}`, row]));
+
+  assert.equal(byRack[10].planId, 7);
+  assert.equal(byRack[10].rackRoomId, 2, 'ชั้นวางที่อยู่ในห้อง ต้องบอกห้องที่ต้องเข้าไปก่อน');
+  assert.equal(byRack[10].isFloorZone, 0);
+
+  assert.equal(byRack[11].rackRoomId, null, 'ชั้นลอยบนผังไม่มีห้อง');
+  assert.equal(byRack[11].isFloorZone, 1);
+
+  assert.equal(byRack.room1.planId, 7, 'ของที่วางในโซนโดยตรงก็ต้องรู้ว่าอยู่คลังไหน');
+  assert.equal(byRack.room1.rackId, null);
 });
 
 test('สินค้าตัวเดียวกันวางได้หลายที่พร้อมกัน', () => {

@@ -35,11 +35,16 @@ export const getPlacedTotal = (db, itemId, { excludeId = null } = {}) => {
 
 // สรุปตำแหน่งทั้งหมดของสินค้า 1 ตัว + ส่วนที่ยังไม่ได้ระบุตำแหน่ง
 export const getItemLocations = (db, itemId) => {
+  // planId/rackRoomId/isFloorZone มีไว้ให้หน้าเว็บพาผู้ใช้ไปยังจุดนั้นบนผังคลังได้เลย
+  // (ไม่งั้นต้องยิง /api/racks/:id ต่ออีกรอบเพื่อถามว่าชั้นวางตัวนี้อยู่คลังไหน ห้องไหน)
   const locations = db.prepare(`
     SELECT l.id, l.rack_id AS rackId, l.storage_level AS storageLevel, l.room_id AS roomId,
            l.quantity, l.note,
            r.name AS rackName, rm.name AS roomName,
-           COALESCE(rr.name, rm.name) AS areaName
+           COALESCE(rr.name, rm.name) AS areaName,
+           COALESCE(r.plan_id, rm.plan_id) AS planId,
+           r.room_id AS rackRoomId,
+           COALESCE(r.is_floor, 0) AS isFloorZone
     FROM item_locations l
     LEFT JOIN storage_racks r ON r.id = l.rack_id AND r.deleted_at IS NULL
     LEFT JOIN rooms rr ON rr.id = r.room_id AND rr.deleted_at IS NULL
