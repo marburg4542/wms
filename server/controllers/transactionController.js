@@ -4,7 +4,7 @@ import { sendPushToUser, sendPushToRoles, WAREHOUSE_STAFF_ROLES } from '../push.
 import { resolveProjectName } from './projectController.js';
 import { availableForProject, getReservedLocationIds, getStagingLocations, readItemStockContext } from '../utils/projectStock.js';
 import { ADJUSTMENT_LABEL, INBOUND_FALLBACK_LABEL } from '../utils/projects.js';
-import { getItemLocations, syncPrimaryLocation } from '../utils/itemLocations.js';
+import { getItemLocations, setLocationQuantity, syncPrimaryLocation } from '../utils/itemLocations.js';
 import { nextTransactionId } from '../utils/transactionId.js';
 
 class ValidationError extends Error {
@@ -424,6 +424,16 @@ export const adjustStock = (req, res) => {
     const transactionId = nextTransactionId('ADJ');
     const absQty = Math.abs(delta);
 
+    // ปรับยอดขึ้นจากผังคลัง (กดจากรูปสินค้าบนชั้น) — คนนับเจอของเกินตรงหน้าชั้นนั้น ของจึงอยู่ตรงนั้นจริง
+    // วางให้ที่จุดเดิมเลย ไม่ต้องไปกองที่ "ยังไม่ระบุตำแหน่ง" แล้วตามผูกเองทีหลัง
+    // ไม่ส่งมา (หน้ารายการอะไหล่) = พฤติกรรมเดิม
+    let placeTarget = null;
+    if (delta > 0 && req.body.placeAt != null && req.body.placeAt !== '') {
+      placeTarget = db.prepare('SELECT id, rack_id, storage_level, room_id FROM item_locations WHERE id = ? AND item_id = ?')
+        .get(Number(req.body.placeAt), normalizedSku);
+      if (!placeTarget) throw new ValidationError('ตำแหน่งที่ระบุไม่ใช่ของสินค้าตัวนี้');
+    }
+
     // ปรับยอดลงแล้วของบนชั้นเกินยอดที่นับได้เท่าไร ต้องหักออกจากตำแหน่งไหนบ้าง
     const removals = [];
     if (delta < 0) {
@@ -493,9 +503,24 @@ export const adjustStock = (req, res) => {
         syncPrimaryLocation(db, normalizedSku);
       }
 
+      // วางผ่าน setLocationQuantity จุดเดียวกับทุกที่ — ได้ด่านเพดานยอดวาง + syncPrimaryLocation ครบ
+      // อยู่ใน transaction เดียวกับยอดรับเข้า ถ้าวางไม่ผ่าน ยอดจะไม่ขยับเลย ไม่ค้างครึ่งทาง
+      if (placeTarget) {
+        setLocationQuantity(db, {
+          itemId: normalizedSku,
+          rackId: placeTarget.rack_id,
+          storageLevel: placeTarget.storage_level,
+          roomId: placeTarget.room_id,
+          quantity: absQty,
+          mode: 'add',
+          createdBy: req.user.username
+        });
+      }
+
       logAudit(req.user.username, 'transaction.adjust', 'transaction', transactionId, {
         sku: normalizedSku, from: current, to: countedQty, delta,
-        removedFrom: removals.map((cut) => ({ locationId: cut.id, qty: cut.take }))
+        removedFrom: removals.map((cut) => ({ locationId: cut.id, qty: cut.take })),
+        ...(placeTarget ? { placedAt: { locationId: placeTarget.id, qty: absQty } } : {})
       });
     })();
 

@@ -44,6 +44,10 @@ import { onServerEvent } from '../../utils/events';
 import { useBodyScrollLock } from '../../utils/useBodyScrollLock';
 import { confirmDialog } from '../../utils/confirm';
 import RackBlueprint from './RackBlueprint';
+import { locationRowLabel } from '../LocationPicker';
+import BarcodeScanner from '../BarcodeScanner';
+import { isCameraScanDevice } from '../../utils/device';
+import { parseScannedCode } from '../../utils/qr';
 import {
   CANVAS_HEIGHT,
   CANVAS_WIDTH,
@@ -765,6 +769,11 @@ export default function Storage() {
   const [remoteChanged, setRemoteChanged] = useState(false);
   const [searchResults, setSearchResults] = useState([]);
   const [searchOpen, setSearchOpen] = useState(false);
+  // ผลค้นหาที่เป็นสินค้าวางหลายจุด กดแล้วกางรายการจุดออกมาให้เลือก — { sku, loading, locations, unplaced }
+  const [searchExpand, setSearchExpand] = useState(null);
+  const searchBoxRef = useRef(null);
+  const searchInputRef = useRef(null);
+  const [scanOpen, setScanOpen] = useState(false);
   const [drawPreview, setDrawPreview] = useState(null);
   const [rotatePreview, setRotatePreview] = useState(null); // องศาที่กำลังลากหมุน (แสดงสดบนผัง)
   const [viewport, setViewport] = useState({ zoom: 0.8, panX: 20, panY: 20 });
@@ -1843,7 +1852,8 @@ export default function Storage() {
   }, [searchParams, setSearchParams]);
 
   useEffect(() => {
-    const query = locateSku.trim().toLowerCase();
+    // ยิงเครื่องสแกนบนคอมลงช่องนี้ → ป้ายเดิม 9 หลักต้องแตกเป็นรหัสสินค้าก่อน ไม่งั้นค้นไม่เจอ
+    const query = parseScannedCode(locateSku).searchValue.toLowerCase();
     if (query.length < 2) { setSearchResults([]); return undefined; }
     let alive = true;
     const timer = setTimeout(async () => {
@@ -1857,16 +1867,92 @@ export default function Storage() {
         type: 'sku', key: `sku:${product.sku || product.itemId}`,
         label: product.sku || product.itemId, detail: product.name || product.itemName || 'สินค้า', product
       }));
+      // ไม่สั่งเปิดรายการตรงนี้ — ผลค้นหาถูกคำนวณใหม่ทุกครั้งที่ผังโหลดห้อง/ชั้นใหม่ (orderedEntities เปลี่ยน)
+      // ถ้าเปิดเองด้วย เลือกผลแล้วพาไปอีกห้อง รายการจะเด้งกลับขึ้นมาบังผังทั้งที่เพิ่งเลือกไป
+      // การเปิดมาจากการพิมพ์/โฟกัสช่องค้นหาเท่านั้น
       setSearchResults([...entityResults, ...products].slice(0, 10));
-      setSearchOpen(true);
     }, 180);
     return () => { alive = false; clearTimeout(timer); };
   }, [locateSku, orderedEntities]);
 
-  const chooseSearchResult = useCallback((result) => {
+  // กดที่อื่น/กด Esc แล้วปิดรายการผลค้นหา — เดิมไม่มีทางปิดนอกจากเลือกสักอัน
+  // (ไม่มีใครเห็นเพราะรายการจมอยู่หลังผัง พอยกขึ้นมาให้เห็นแล้ว ถ้าไม่ปิดจะค้างบังผังมุมซ้ายบน)
+  useEffect(() => {
+    if (!searchOpen) return undefined;
+    const onPointerDown = (event) => { if (!searchBoxRef.current?.contains(event.target)) setSearchOpen(false); };
+    const onKey = (event) => { if (event.key === 'Escape') setSearchOpen(false); };
+    document.addEventListener('mousedown', onPointerDown);
+    document.addEventListener('keydown', onKey);
+    return () => {
+      document.removeEventListener('mousedown', onPointerDown);
+      document.removeEventListener('keydown', onKey);
+    };
+  }, [searchOpen]);
+
+  // สินค้าวางหลายจุด: กางรายการจุดใต้ผลค้นหาให้เลือกก่อน เหมือนปุ่ม 📍 หน้ารายการอะไหล่
+  // (เดิมพาไปได้แค่ "ตำแหน่งหลัก" = จุดที่มีของมากสุด จุดอื่นต้องไปเปิดหาเอง)
+  const loadSearchLocations = useCallback(async (sku) => {
+    setSearchExpand({ sku, loading: true, locations: [], unplaced: 0 });
+    const result = await fetchApi(`/api/storage-map/locations/${encodeURIComponent(sku)}`, { suppressErrorToast: true }).catch(() => ({}));
+    setSearchExpand((current) => (current?.sku !== sku ? current : {
+      sku,
+      loading: false,
+      locations: (result.locations || []).filter((loc) => Number(loc.quantity) > 0),
+      unplaced: Number(result.unplaced || 0),
+    }));
+  }, []);
+
+  const toggleSearchLocations = useCallback((sku) => {
+    if (searchExpand?.sku === sku) setSearchExpand(null);
+    else loadSearchLocations(sku);
+  }, [searchExpand, loadSearchLocations]);
+
+  // หารหัสที่พิมพ์/สแกนมาแล้วพาไปบนผัง — ใช้ทั้งปุ่ม "ค้นหา" (รวมเครื่องสแกนบนคอมที่ยิงรหัสแล้วกด Enter ให้เอง)
+  // และกล้องมือถือ พฤติกรรมจึงเหมือนกันทุกทาง
+  //   ตรงรหัสสินค้าที่วางหลายจุด → กางรายการจุดให้เลือก (ไม่เดาให้ว่าไปจุดหลัก)
+  //   ตรงรหัสสินค้าที่วางจุดเดียว/ยังไม่วาง → ไปเลย (ยังไม่วาง ผังจะเตือนเอง)
+  //   ไม่ตรงรหัสสินค้าตัวไหน (ชื่อห้อง/ชั้น/ค้นบางส่วน) → พฤติกรรมเดิม
+  const locateCode = useCallback(async (raw, { fromScan = false } = {}) => {
+    const { searchValue, fromLabel } = parseScannedCode(raw);
+    if (!searchValue) return;
+    setLocateSku(searchValue);
+    setSearchExpand(null);
+    const result = await fetchApi(`/api/products?search=${encodeURIComponent(searchValue)}&limit=6`).catch(() => ({}));
+    const product = (result.products || []).find((row) => String(row.sku) === searchValue);
+    const scanned = fromLabel ? `สแกนป้าย: รหัสสินค้า ${searchValue}` : `สแกนได้: ${searchValue}`;
+    if (product && Number(product.locationCount) > 1) {
+      setSearchOpen(true);
+      loadSearchLocations(product.sku);
+      if (fromScan) toast.success(`${scanned} — วางอยู่ ${product.locationCount} จุด เลือกจุดที่จะดู`);
+      return;
+    }
+    if (fromScan && !product) {
+      toast.error(`ไม่พบสินค้ารหัส ${searchValue}`);
+      return;
+    }
     setSearchOpen(false);
+    if (fromScan) toast.success(scanned);
+    setSearchParams({ highlight: product?.sku || searchValue });
+  }, [loadSearchLocations, setSearchParams]);
+
+  // มือถือ → เปิดกล้อง / คอม → โฟกัสช่องค้นหาให้เครื่องสแกนบาร์โค้ดยิงลงไป (ทำงานเหมือนคีย์บอร์ด)
+  // แบบเดียวกับหน้าสินค้าคงคลังและรายการอะไหล่
+  const handleScanClick = () => {
+    if (isCameraScanDevice()) {
+      setScanOpen(true);
+    } else {
+      searchInputRef.current?.focus();
+      searchInputRef.current?.select();
+      toast('พร้อมสแกน — ยิงบาร์โค้ดด้วยเครื่องสแกนได้เลย', { icon: '🔎' });
+    }
+  };
+
+  const chooseSearchResult = useCallback((result, locationId = null) => {
+    setSearchOpen(false);
+    setSearchExpand(null);
     if (result.type === 'sku') {
-      setSearchParams({ highlight: result.product.sku || result.product.itemId });
+      const sku = result.product.sku || result.product.itemId;
+      setSearchParams(locationId ? { highlight: sku, loc: String(locationId) } : { highlight: sku });
       return;
     }
     setSelectedKey(result.key);
@@ -2067,7 +2153,10 @@ export default function Storage() {
 
   return (
     <div className="flex h-full min-h-0 flex-col gap-2 animate-fade-in">
-      <header className="glass-panel shrink-0 rounded-xl px-3 py-2">
+      {/* relative z-30: glass-panel ใช้ backdrop-filter ซึ่งแยกชั้นวาดของตัวเอง กรอบผัง (main) ที่อยู่ถัดลงไป
+          จึงวาดทับรายการผลค้นหาที่ห้อยลงมาจากแถบนี้จนเหลือให้เห็นแค่ขอบ — ยกแถบขึ้นเหนือผัง
+          แต่ยังต่ำกว่าป๊อปอัพทั้งหน้า (z-100) ที่วางไว้ระดับเดียวกัน */}
+      <header className="glass-panel relative z-30 shrink-0 rounded-xl px-3 py-2">
         <div className="flex flex-col gap-2 xl:flex-row xl:items-center xl:justify-between">
           <div className="min-w-0">
             <div className="mb-1 flex items-center gap-2 text-xs text-base-content/50">
@@ -2093,21 +2182,64 @@ export default function Storage() {
             )}
 
             <form
+              ref={searchBoxRef}
               className="join relative"
-              onSubmit={(event) => { event.preventDefault(); if (locateSku.trim()) setSearchParams({ highlight: locateSku.trim() }); }}
+              onSubmit={(event) => { event.preventDefault(); locateCode(locateSku); }}
             >
+              <button type="button" onClick={handleScanClick} className="btn btn-sm btn-square btn-primary join-item" title="สแกนบาร์โค้ด/QR" aria-label="สแกนบาร์โค้ด">📷</button>
               <label className="input input-bordered input-sm join-item flex items-center gap-2">
                 <FiSearch className="opacity-50" />
-                <input className="w-28 sm:w-44" placeholder="ค้นหาห้อง ชั้น Component หรือ SKU" value={locateSku} onFocus={() => setSearchOpen(true)} onChange={(event) => setLocateSku(event.target.value)} />
+                <input ref={searchInputRef} className="w-28 sm:w-44" placeholder="ค้นหาห้อง ชั้น Component หรือ SKU" value={locateSku} onFocus={() => setSearchOpen(true)} onChange={(event) => { setLocateSku(event.target.value); setSearchExpand(null); setSearchOpen(true); }} />
               </label>
               <button className="btn btn-sm btn-primary join-item" type="submit">ค้นหา</button>
               {searchOpen && searchResults.length > 0 && (
-                <div className="absolute left-0 top-full z-100 mt-1 w-80 overflow-hidden rounded-xl border border-base-300 bg-base-100 p-1 shadow-2xl">
-                  {searchResults.map((result) => (
-                    <button key={result.key} type="button" className="flex w-full items-center justify-between rounded-lg px-3 py-2 text-left hover:bg-base-200" onClick={() => chooseSearchResult(result)}>
-                      <span className="truncate text-sm font-semibold">{result.label}</span><span className="ml-3 shrink-0 text-xs text-base-content/45">{result.detail}</span>
-                    </button>
-                  ))}
+                <div className="absolute left-0 top-full mt-1 max-h-[70vh] w-80 overflow-y-auto rounded-xl border border-base-300 bg-base-100 p-1 shadow-2xl">
+                  {searchResults.map((result) => {
+                    const sku = result.type === 'sku' ? (result.product.sku || result.product.itemId) : null;
+                    const spots = Number(result.product?.locationCount || 0);
+                    const expanded = sku && searchExpand?.sku === sku;
+                    return (
+                      <div key={result.key}>
+                        <button
+                          type="button"
+                          className={`flex w-full items-center justify-between rounded-lg px-3 py-2 text-left hover:bg-base-200 ${expanded ? 'bg-base-200' : ''}`}
+                          onClick={() => (spots > 1 ? toggleSearchLocations(sku) : chooseSearchResult(result))}
+                        >
+                          {/* ชื่อเต็มสู้ที่กับรหัสไม่ได้ — ให้รหัส/ชื่อห้องกันที่ไว้ก่อน (ไม่เกินครึ่งกว่าๆ) ชื่อสินค้าค่อยย่อ */}
+                          <span className="max-w-[55%] shrink-0 truncate text-sm font-semibold">{result.label}</span>
+                          <span className="ml-3 flex min-w-0 items-center gap-1.5 text-xs text-base-content/45">
+                            <span className="truncate">{result.detail}</span>
+                            {spots > 1 && <span className="badge badge-ghost badge-xs shrink-0">{spots} จุด</span>}
+                          </span>
+                        </button>
+                        {expanded && (
+                          <div className="mb-1 ml-3 border-l-2 border-primary/30 pl-2">
+                            <p className="px-2 pt-1 text-[11px] font-semibold opacity-60">เลือกตำแหน่งที่จะดูบนผังคลัง</p>
+                            {searchExpand.loading && <p className="px-2 py-1.5 text-xs opacity-60">กำลังโหลด…</p>}
+                            {!searchExpand.loading && searchExpand.locations.length === 0 && (
+                              <button type="button" className="w-full rounded-lg px-2 py-1.5 text-left text-xs hover:bg-base-200" onClick={() => chooseSearchResult(result)}>
+                                โหลดรายการตำแหน่งไม่ได้ — ไปตำแหน่งหลักแทน
+                              </button>
+                            )}
+                            {searchExpand.locations.map((loc) => (
+                              <button
+                                key={loc.id}
+                                type="button"
+                                className="flex w-full items-center justify-between gap-2 rounded-lg px-2 py-1.5 text-left text-xs hover:bg-base-200"
+                                onClick={() => chooseSearchResult(result, loc.id)}
+                              >
+                                <span className="min-w-0 truncate">📍 {locationRowLabel(loc)}</span>
+                                <span className="shrink-0 font-semibold">{Number(loc.quantity).toLocaleString()}</span>
+                              </button>
+                            ))}
+                            {searchExpand.unplaced > 0 && (
+                              <p className="px-2 pb-1 text-[11px] text-warning">ยังไม่ระบุตำแหน่ง {searchExpand.unplaced.toLocaleString()} ชิ้น</p>
+                            )}
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })}
                 </div>
               )}
             </form>
@@ -2378,6 +2510,13 @@ export default function Storage() {
 
       {unassignedOpen && (
         <UnassignedModal onClose={() => setUnassignedOpen(false)} onAssigned={reloadContext} />
+      )}
+
+      {scanOpen && (
+        <BarcodeScanner
+          onClose={() => setScanOpen(false)}
+          onDetected={(code) => { setScanOpen(false); locateCode(code, { fromScan: true }); }}
+        />
       )}
 
       {contextMenu && (

@@ -94,6 +94,32 @@ test('ปรับยอดลงต้องหักของออกจา�
   assertClean('ปรับยอดลง');
 });
 
+test('ปรับยอดขึ้นจากผังคลัง ของที่นับเกินต้องไปวางที่จุดที่เปิดมา ไม่ใช่กองที่ยังไม่ระบุตำแหน่ง', async () => {
+  const spot = db.prepare('SELECT id, quantity FROM item_locations WHERE item_id = ? ORDER BY quantity ASC').get(sku);
+  const beforeStock = stock(sku);
+  const beforePlaced = placed(sku);
+
+  await callOk('adjustStock + placeAt', transactions.adjustStock, {
+    body: { sku, countedQty: beforeStock + 4, note: 'นับเจอเพิ่มที่ชั้นนี้', placeAt: spot.id }
+  });
+  assert.equal(stock(sku), beforeStock + 4);
+  assert.equal(
+    db.prepare('SELECT quantity q FROM item_locations WHERE id = ?').get(spot.id).q,
+    spot.quantity + 4,
+    'ของที่นับเกินต้องไปอยู่ที่จุดที่ระบุ'
+  );
+  assert.equal(placed(sku), beforePlaced + 4, 'ต้องไม่ไปโผล่ที่จุดอื่น');
+  assertClean('ปรับยอดขึ้นพร้อมวางที่จุดเดิม');
+
+  // ตำแหน่งที่ไม่ใช่ของสินค้าตัวนี้ → ปฏิเสธทั้งก้อน ยอดต้องไม่ขยับเลย
+  const refused = await call(transactions.adjustStock, {
+    body: { sku, countedQty: stock(sku) + 1, note: 'ทดสอบ', placeAt: 999999 }
+  });
+  assert.equal(refused.success, false, 'ตำแหน่งแปลกปลอมต้องถูกปฏิเสธ');
+  assert.equal(stock(sku), beforeStock + 4, 'ถูกปฏิเสธแล้วยอดต้องไม่เปลี่ยน');
+  assertClean('ปฏิเสธตำแหน่งแปลกปลอม');
+});
+
 test('ปรับยอดเป็น 0 แล้วตำแหน่งต้องหายจากชั้นทั้งหมด', async () => {
   const rows = db.prepare('SELECT id, quantity FROM item_locations WHERE item_id = ? ORDER BY quantity DESC').all(sku);
   const deductions = rows.map((row) => ({ locationId: row.id, quantity: row.quantity }));

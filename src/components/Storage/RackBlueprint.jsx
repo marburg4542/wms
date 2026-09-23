@@ -4,6 +4,7 @@ import toast from 'react-hot-toast';
 import { fetchApi, getAssetUrl } from '../../utils/api';
 import { confirmDialog } from '../../utils/confirm';
 import { useBodyScrollLock } from '../../utils/useBodyScrollLock';
+import AdjustStockModal from '../AdjustStock';
 
 const NO_IMAGE = "data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSIxMDAiIGhlaWdodD0iMTAwIj48cmVjdCB3aWR0aD0iMTAwJSIgaGVpZ2h0PSIxMDAlIiBmaWxsPSIjZjNmNGY2Ii8+PHRleHQgeD0iNTAlIiB5PSI1MCUiIGZvbnQtc2l6ZT0iMTIiIHRleHQtYW5jaG9yPSJtaWRkbGUiIGFsaWdubWVudC1iYXNlbGluZT0ibWlkZGxlIiBmb250LWZhbWlseT0ic2Fucy1zZXJpZiIgZmlsbD0iIzliOWI5YiI+Tm8gSW1hZ2U8L3RleHQ+PC9zdmc+";
 const getImg = (url) => (url ? getAssetUrl(url) : NO_IMAGE);
@@ -13,7 +14,7 @@ const getImg = (url) => (url ? getAssetUrl(url) : NO_IMAGE);
 // ถ้าไม่หุ้ม การติ๊กช่องเลือก 1 ครั้งจะวาดใหม่ทุกแถว (แถวละ ~16 element + ไอคอน SVG 2 ตัว)
 // ทำให้เครื่องหมายถูกกว่าจะขึ้นต้องรอ React วาดจบทั้งตารางก่อน
 const LevelRow = React.memo(function LevelRow({
-  item, canEdit, saving, selected, highlighted, removeTitle, onToggle, onMove, onSetQty, onRemove
+  item, canEdit, saving, selected, highlighted, removeTitle, onToggle, onMove, onSetQty, onRemove, onPreview
 }) {
   return (
     <tr className={`${highlighted ? 'bg-warning/10' : 'hover:bg-base-200/40'} ${selected ? 'bg-primary/5' : ''}`}>
@@ -31,7 +32,11 @@ const LevelRow = React.memo(function LevelRow({
       <td>
         <div className="avatar">
           <div className="w-10 h-10 rounded bg-base-300">
-            <img src={getImg(item.imageUrl)} crossOrigin="anonymous" alt={item.sku} loading="lazy" decoding="async" width="40" height="40" />
+            <button type="button" onClick={() => onPreview(item)} disabled={!item.imageUrl}
+              title={item.imageUrl ? 'กดเพื่อดูรูปใหญ่' : 'ไม่มีรูป'}
+              className={`w-full h-full ${item.imageUrl ? 'cursor-zoom-in' : ''}`}>
+              <img src={getImg(item.imageUrl)} crossOrigin="anonymous" alt={item.sku} loading="lazy" decoding="async" width="40" height="40" />
+            </button>
           </div>
         </div>
       </td>
@@ -90,6 +95,11 @@ export default function RackBlueprint({ rackId, highlightLevel, highlightSku, ca
   // ป๊อปอัพย้าย: { items: [{ sku, name, max, quantity }], kind: 'rack'|'room', rackId, level, roomId }
   const [moving, setMoving] = useState(null);
   const [selected, setSelected] = useState(() => new Set());   // sku ที่ติ๊กไว้ในเลเวลนี้
+  // รูปที่เปิดดูขนาดใหญ่ — คนจัดของยืนหน้าชั้นแล้วเทียบของจริงกับรูปได้ ไม่ต้องออกไปหน้าสินค้าคงคลัง
+  const [preview, setPreview] = useState(null);
+  const openPreview = useCallback((item) => setPreview(item), []);   // identity คงที่ ไม่งั้น memo ของแถวเสียเปล่า
+  // ปรับยอดจากรูปใหญ่ — คนยืนนับหน้าชั้นอยู่แล้ว ไม่ต้องเดินไปเปิดหน้ารายการอะไหล่อีกหน้า
+  const [adjusting, setAdjusting] = useState(false);
   // กระจกเงาของค่าปัจจุบัน — ให้ callback ที่ส่งเข้าแถวอ่านค่าล่าสุดได้โดยไม่ต้องสร้างใหม่ทุก render
   // (ถ้า callback เปลี่ยน identity ทุกครั้ง React.memo ของแถวจะไม่ช่วยอะไรเลย)
   const selectedLevelRef = useRef(null);
@@ -98,9 +108,34 @@ export default function RackBlueprint({ rackId, highlightLevel, highlightSku, ca
   const levelItemsRef = useRef([]);
   useBodyScrollLock(true);
 
+  // Esc ปิดทีละชั้นจากบนสุด — ฟอร์มปรับยอดก่อน แล้วค่อยรูปใหญ่ ผังชั้นวางข้างหลังยังเปิดค้างไว้ให้ดูรายการต่อ
+  useEffect(() => {
+    if (!preview) return undefined;
+    const onKey = (event) => {
+      if (event.key !== 'Escape') return;
+      if (adjusting) setAdjusting(false);
+      else setPreview(null);
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [preview, adjusting]);
+
   const load = useCallback(() => fetchApi(`/api/racks/${rackId}`)
     .then((result) => { if (result.success) setDetail(result); return result; })
     .catch(() => ({})), [rackId]);
+
+  // ปรับยอดเสร็จ → โหลดชั้นวางใหม่ แล้วอัปเดตตัวเลขใต้รูปให้ตรงของจริงทันที
+  // (จุดนี้อาจหมดไปแล้วถ้าหักจนเหลือ 0 → ปิดรูป เพราะไม่มีของให้ดูที่นี่แล้ว)
+  const finishAdjust = useCallback(async () => {
+    setAdjusting(false);
+    const result = await load();
+    onChanged?.();
+    setPreview((current) => {
+      if (!current) return current;
+      const fresh = (result?.items || []).find((row) => row.sku === current.sku && Number(row.level) === Number(current.level));
+      return fresh || null;
+    });
+  }, [load, onChanged]);
 
   useEffect(() => {
     let alive = true;
@@ -416,6 +451,7 @@ export default function RackBlueprint({ rackId, highlightLevel, highlightSku, ca
                       onMove={openMove}
                       onSetQty={setQtyHere}
                       onRemove={removeOne}
+                      onPreview={openPreview}
                     />
                   ))}
                 </tbody>
@@ -585,6 +621,44 @@ export default function RackBlueprint({ rackId, highlightLevel, highlightSku, ca
           </div>
         );
       })()}
+
+      {/* รูปใหญ่ — หน้าตาเดียวกับหน้าสินค้าคงคลัง · แตะพื้นหลังปิดแค่รูป ต้อง stopPropagation
+          ไม่งั้นคลิกทะลุไปถึงพื้นหลังของผังชั้นวาง แล้วปิดหน้าเลเวลทิ้งไปด้วย */}
+      {preview && (
+        <div className="fixed inset-0 z-[110] flex items-center justify-center bg-black/80 p-4 backdrop-blur-sm"
+          onClick={(event) => { event.stopPropagation(); setPreview(null); }}>
+          <div className="relative w-full max-w-3xl" onClick={(event) => event.stopPropagation()}>
+            <button type="button" onClick={() => setPreview(null)}
+              className="btn btn-sm btn-circle absolute -top-3 -right-3 z-10" title="ปิด (Esc)">✕</button>
+            {/* crossOrigin ต้องตรงกับรูปเล็กในตาราง ไม่งั้นเบราว์เซอร์นับเป็นคนละแคชแล้วโหลดใหม่ทั้งก้อน */}
+            <img src={getImg(preview.imageUrl)} crossOrigin="anonymous" alt={preview.sku} decoding="async"
+              className="w-full max-h-[75vh] object-contain rounded-2xl bg-base-100 shadow-2xl" />
+            <div className="mt-3 text-center text-white">
+              <p className="font-mono text-sm font-semibold">{preview.sku}</p>
+              <p className="text-sm opacity-90">{preview.name}</p>
+              <p className="flex items-center justify-center gap-3 text-xs mt-1">
+                <span>วางที่นี่ <b className="text-sm">{Number(preview.qtyHere ?? 0)}</b></span>
+                <span className="opacity-80">คงเหลือรวม <b className="text-sm">{preview.stock}</b></span>
+              </p>
+              {/* สิทธิ์เดียวกับปุ่มปรับยอดหน้ารายการอะไหล่ — เซิร์ฟเวอร์ล็อก Admin/Manager ไว้อีกชั้น */}
+              {canEdit && (
+                <button type="button" className="btn btn-sm btn-warning mt-3" onClick={() => setAdjusting(true)}>
+                  ปรับยอดตามที่นับได้
+                </button>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {preview && adjusting && (
+        <AdjustStockModal
+          product={{ sku: preview.sku, name: preview.name, stock: preview.stock }}
+          focus={{ rackId, level: preview.level }}
+          onClose={() => setAdjusting(false)}
+          onDone={finishAdjust}
+        />
+      )}
     </div>
   );
 }

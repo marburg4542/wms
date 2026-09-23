@@ -13,6 +13,8 @@ import { shrinkImage } from '../../utils/image';
 
 const PAGE_SIZE = 50; // จำนวนสินค้าต่อหน้า (แคตตาล็อกจริงมีหลายพันตัว ต้องแบ่งหน้า)
 import { ProductCardSkeleton } from '../Skeleton';
+import LocationPicker from '../LocationPicker';
+import AdjustStockModal from '../AdjustStock';
 import { useBodyScrollLock } from '../../utils/useBodyScrollLock';
 
 const nf = (n) => Number(n || 0).toLocaleString();
@@ -90,10 +92,7 @@ export default function Products() {
   const lowStockOnly = searchParams.get('filter') === 'low';
   const [inboundModal, setInboundModal] = useState(false);
   const [inboundForm, setInboundForm] = useState(emptyInboundForm);
-  const [adjustModal, setAdjustModal] = useState(false);
-  const [adjustForm, setAdjustForm] = useState({ sku: '', name: '', currentStock: 0, countedQty: '', note: '' });
-  const [adjustLocations, setAdjustLocations] = useState([]);   // ของตัวนี้วางอยู่ที่ไหนบ้าง
-  const [adjustCuts, setAdjustCuts] = useState({});             // locationId -> จำนวนที่หายไปจากที่นั้น
+  const [adjustTarget, setAdjustTarget] = useState(null);   // สินค้าที่กำลังปรับยอด (ฟอร์มอยู่ใน AdjustStock ใช้ร่วมกับผังคลัง)
   const [productModal, setProductModal] = useState(false);
   const [editingSku, setEditingSku] = useState(null);
   const [editingGroupId, setEditingGroupId] = useState(null); // หมวดเดิมตอนเปิดฟอร์ม — ใช้เทียบว่าย้ายหมวดไหม (ไม่ใช่ค่าที่ถูก default ให้)
@@ -117,7 +116,7 @@ export default function Products() {
   const [priceHistory, setPriceHistory] = useState(null); // { sku, name } | null
   const [priceLots, setPriceLots] = useState([]);
   const [editLocations, setEditLocations] = useState(null);  // ตำแหน่งจริงจากผังคลัง (ตอนแก้ไขสินค้า)
-  useBodyScrollLock(productModal || inboundModal || adjustModal || scanOpen || !!priceHistory); // freeze พื้นหลังตอนเปิด modal
+  useBodyScrollLock(productModal || inboundModal || !!adjustTarget || scanOpen || !!priceHistory); // freeze พื้นหลังตอนเปิด modal
 
   // silent = รีเฟรชเบื้องหลังโดยไม่โชว์ spinner (ใช้ตอน poll อัตโนมัติ)
   const fetchProducts = useCallback(async ({ silent = false } = {}) => {
@@ -207,18 +206,6 @@ export default function Products() {
     } catch { /* ignore */ }
   };
 
-  const openAdjustModal = (product) => {
-    // เติมยอดปัจจุบันไว้ให้ ผู้ใช้แก้เป็นจำนวนที่นับได้จริง (ถ้าไม่เปลี่ยน = ไม่ปรับ)
-    setAdjustForm({ sku: product.sku, name: product.name, currentStock: product.stock, countedQty: String(product.stock), note: '' });
-    setAdjustLocations([]);
-    setAdjustCuts({});
-    setAdjustModal(true);
-    // ถ้านับได้น้อยกว่าที่วางไว้ ต้องรู้ก่อนว่าของหายจากชั้นไหน จึงดึงตำแหน่งมาเตรียมไว้เลย
-    fetchApi(`/api/storage-map/locations/${encodeURIComponent(product.sku)}`)
-      .then((result) => { if (result.success) setAdjustLocations(result.locations.filter(l => Number(l.quantity) > 0)); })
-      .catch(() => {});
-  };
-
   const openProductModal = (product = null) => {
     const firstGroup = groups[0];
     if (product) {
@@ -301,44 +288,6 @@ export default function Products() {
       }
     } catch (err) {
       console.error('Inbound failed:', err);
-    } finally {
-      setSubmitting(false);
-    }
-  };
-
-  const submitAdjust = async (event) => {
-    event.preventDefault();
-    const counted = Number(adjustForm.countedQty);
-    if (!Number.isInteger(counted) || counted < 0) return toast.error('จำนวนที่นับได้ต้องเป็นจำนวนเต็มไม่ติดลบ');
-
-    setSubmitting(true);
-    try {
-      const deductions = Object.entries(adjustCuts)
-        .map(([locationId, quantity]) => ({ locationId: Number(locationId), quantity: Number(quantity) || 0 }))
-        .filter((entry) => entry.quantity > 0);
-      const json = await fetchApi('/api/transactions/adjust', {
-        method: 'POST',
-        body: JSON.stringify({
-          sku: adjustForm.sku,
-          countedQty: counted,
-          note: adjustForm.note,
-          ...(deductions.length ? { deductions } : {})
-        })
-      });
-      if (json.needsLocationChoice) {
-        setAdjustLocations(json.locations.map((loc) => ({
-          id: loc.locationId, rackName: loc.place, storageLevel: loc.storageLevel, quantity: loc.quantity
-        })));
-        toast.error(`ของวางอยู่หลายที่ — ระบุก่อนว่าหายไปจากที่ไหนรวม ${json.excess} ชิ้น`);
-        return;
-      }
-      if (json.success) {
-        toast.success(json.adjusted ? json.message : 'ยอดตรงกับระบบอยู่แล้ว ไม่มีการเปลี่ยนแปลง');
-        setAdjustModal(false);
-        await fetchProducts();
-      }
-    } catch (err) {
-      console.error('Adjust failed:', err);
     } finally {
       setSubmitting(false);
     }
@@ -711,7 +660,21 @@ export default function Products() {
                   <span>หน่วย: {item.unit || '-'}</span>
                   <span className="col-span-2 truncate">หมวด: {item.groupId} — {item.groupName || 'ทั่วไป'}</span>
                   <span className="col-span-2 truncate">ผู้ขาย: {item.vendor || '-'}</span>
-                  <span className="col-span-2 truncate">📍 ตำแหน่ง: {locationLabel(item) || '-'}</span>
+                  {/* กดแล้วพาไปผังคลังได้เหมือนหน้าสินค้าคงคลัง — วางหลายจุดจะให้เลือกก่อนว่าจุดไหน */}
+                  <span className="col-span-2 truncate">
+                    {locationLabel(item) ? (
+                      <>
+                        ตำแหน่ง:{' '}
+                        <LocationPicker
+                          sku={item.sku}
+                          locationCount={item.locationCount}
+                          label={locationLabel(item)}
+                          variant="text"
+                          className="text-primary hover:underline"
+                        />
+                      </>
+                    ) : '📍 ตำแหน่ง: -'}
+                  </span>
                 </div>
                 <div className="card-actions justify-end mt-4 pt-4 border-t border-base-200">
                   {item.isActive ? (
@@ -719,7 +682,7 @@ export default function Products() {
                       <button className="btn btn-ghost btn-sm text-primary" onClick={() => openProductModal(item)}>แก้ไข</button>
                       <button className="btn btn-ghost btn-sm text-success" onClick={() => openInboundModal(item)}>รับเข้า</button>
                       <button className="btn btn-ghost btn-sm text-info" onClick={() => openPriceHistory(item)}>💵 ราคา</button>
-                      <button className="btn btn-ghost btn-sm text-warning" onClick={() => openAdjustModal(item)}>ปรับยอด</button>
+                      <button className="btn btn-ghost btn-sm text-warning" onClick={() => setAdjustTarget(item)}>ปรับยอด</button>
                       {canArchive && <button className="btn btn-ghost btn-sm text-error" onClick={() => archiveProduct(item)}>ปิดใช้งาน</button>}
                     </>
                   ) : (
@@ -1020,84 +983,12 @@ export default function Products() {
         );
       })()}
 
-      {adjustModal && (
-        <div className="fixed inset-0 z-100 flex items-center justify-center backdrop-blur-md p-4">
-          <div className="glass-modal w-full max-w-md p-5 sm:p-6 rounded-2xl animate-fade-in max-h-[85vh] overflow-y-auto">
-            <h3 className="font-bold text-lg text-warning border-b border-base-200 pb-3 mb-4">ปรับยอดสต็อก (นับจริง)</h3>
-            <form onSubmit={submitAdjust} className="space-y-4">
-              <div className="text-sm bg-base-200/50 rounded-lg p-3">
-                <div className="font-mono font-semibold">{adjustForm.sku}</div>
-                <div className="opacity-70">{adjustForm.name}</div>
-                <div className="mt-1">ยอดในระบบตอนนี้: <span className="font-bold">{adjustForm.currentStock}</span></div>
-              </div>
-              <label className="form-control w-full">
-                <span className="label-text text-sm font-medium mb-1">จำนวนที่นับได้จริง</span>
-                <input type="number" min="0" step="1" className="input input-bordered w-full" value={adjustForm.countedQty}
-                  onChange={e => setAdjustForm({ ...adjustForm, countedQty: e.target.value })} required autoFocus />
-              </label>
-              {/* แสดงส่วนต่างให้เห็นก่อนกดยืนยัน */}
-              {adjustForm.countedQty !== '' && Number(adjustForm.countedQty) !== adjustForm.currentStock && (
-                <div className="text-sm">ส่วนต่าง: <span className={`font-bold ${Number(adjustForm.countedQty) > adjustForm.currentStock ? 'text-success' : 'text-error'}`}>
-                  {Number(adjustForm.countedQty) > adjustForm.currentStock ? '+' : ''}{Number(adjustForm.countedQty) - adjustForm.currentStock}
-                </span></div>
-              )}
-
-              {/* นับได้น้อยกว่าที่วางไว้บนชั้น = ของหายไปจากชั้นด้วย ต้องบอกระบบว่าหายจากที่ไหน
-                  ไม่งั้นผังคลังจะยังบอกว่ามีของอยู่ ทั้งที่บัญชีบอกว่าหมดแล้ว */}
-              {(() => {
-                const placed = adjustLocations.reduce((sum, loc) => sum + Number(loc.quantity), 0);
-                const counted = adjustForm.countedQty === '' ? null : Number(adjustForm.countedQty);
-                const excess = counted == null ? 0 : placed - counted;
-                if (excess <= 0 || adjustLocations.length === 0) return null;
-                const single = adjustLocations.length === 1;
-                const allocated = adjustLocations.reduce((sum, loc) => sum + (Number(adjustCuts[loc.id]) || 0), 0);
-                const left = excess - (single ? excess : allocated);
-                return (
-                  <div className="rounded-xl border border-warning/50 bg-warning/10 p-3 space-y-2">
-                    <div className="text-sm font-bold">ของบนชั้นหายไป {excess} ชิ้น — หายจากที่ไหน?</div>
-                    {single ? (
-                      <p className="text-xs">
-                        วางอยู่ที่เดียวคือ <b>{adjustLocations[0].rackName || adjustLocations[0].roomName}
-                        {adjustLocations[0].storageLevel ? ` เลเวล ${adjustLocations[0].storageLevel}` : ''}</b> ({adjustLocations[0].quantity} ชิ้น)
-                        — ระบบจะหักออกจากที่นี่ให้อัตโนมัติ
-                      </p>
-                    ) : (
-                      <>
-                        {adjustLocations.map((loc) => (
-                          <div key={loc.id} className="flex items-center gap-2">
-                            <span className="flex-1 truncate text-xs">
-                              📍 {loc.rackName || loc.roomName}{loc.storageLevel ? ` · เลเวล ${loc.storageLevel}` : ''}
-                              <span className="opacity-60"> (มี {loc.quantity})</span>
-                            </span>
-                            <input
-                              type="number" min="0" max={loc.quantity}
-                              className="input input-bordered input-xs w-20"
-                              value={adjustCuts[loc.id] ?? ''}
-                              placeholder="0"
-                              onChange={(e) => setAdjustCuts({ ...adjustCuts, [loc.id]: e.target.value })}
-                            />
-                          </div>
-                        ))}
-                        <div className={`text-xs font-semibold ${left === 0 ? 'text-success' : 'text-error'}`}>
-                          {left === 0 ? '✓ ระบุครบแล้ว' : `ยังต้องระบุอีก ${left} ชิ้น`}
-                        </div>
-                      </>
-                    )}
-                  </div>
-                );
-              })()}
-              <textarea className="textarea textarea-bordered h-20 w-full" value={adjustForm.note}
-                onChange={e => setAdjustForm({ ...adjustForm, note: e.target.value })} placeholder="เหตุผล เช่น นับสต็อกประจำเดือน / ของชำรุด / สูญหาย"></textarea>
-              <div className="flex justify-end gap-3 pt-4 border-t border-base-200">
-                <button type="button" className="btn btn-ghost" onClick={() => setAdjustModal(false)} disabled={submitting}>ยกเลิก</button>
-                <button type="submit" className="btn btn-warning text-white" disabled={submitting}>
-                  {submitting && <span className="loading loading-spinner loading-xs"></span>}
-                  ยืนยันปรับยอด
-                </button>
-              </div>
-            </form>
-          </div>
-        </div>
+      {adjustTarget && (
+        <AdjustStockModal
+          product={adjustTarget}
+          onClose={() => setAdjustTarget(null)}
+          onDone={async () => { setAdjustTarget(null); await fetchProducts(); }}
+        />
       )}
 
       {scanOpen && (
