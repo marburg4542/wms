@@ -9,6 +9,13 @@ import AdjustStockModal from '../AdjustStock';
 const NO_IMAGE = "data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSIxMDAiIGhlaWdodD0iMTAwIj48cmVjdCB3aWR0aD0iMTAwJSIgaGVpZ2h0PSIxMDAlIiBmaWxsPSIjZjNmNGY2Ii8+PHRleHQgeD0iNTAlIiB5PSI1MCUiIGZvbnQtc2l6ZT0iMTIiIHRleHQtYW5jaG9yPSJtaWRkbGUiIGFsaWdubWVudC1iYXNlbGluZT0ibWlkZGxlIiBmb250LWZhbWlseT0ic2Fucy1zZXJpZiIgZmlsbD0iIzliOWI5YiI+Tm8gSW1hZ2U8L3RleHQ+PC9zdmc+";
 const getImg = (url) => (url ? getAssetUrl(url) : NO_IMAGE);
 
+// ป้ายของหน้า "ยังไม่ระบุเลเวล" — ใช้ null ตรงๆ ไม่ได้ เพราะ selectedLevel = null แปลว่ากำลังดูภาพรวมทั้งชั้น
+// เดิมของกลุ่มนี้ไม่มีหน้าตารางให้เข้า ใส่เข้ามาได้จากป๊อปอัพย้าย/แผงวางสินค้า แต่แก้ออกไม่ได้เลย ค้างอยู่ถาวร
+const NO_LEVEL = 'none';
+// ค่าที่ส่งให้เซิร์ฟเวอร์ — ฝั่งนั้นนับ null เป็นอีกช่องหนึ่งของชั้นวางอยู่แล้ว (IFNULL ใน itemLocations.js)
+const levelValue = (level) => (level === NO_LEVEL ? null : level);
+const levelName = (level) => (level === NO_LEVEL ? 'ช่องยังไม่ระบุเลเวล' : `เลเวล ${level}`);
+
 
 // หนึ่งแถวในตารางสินค้าของเลเวล — หุ้ม memo เพราะตารางมีได้เกือบร้อยแถว
 // ถ้าไม่หุ้ม การติ๊กช่องเลือก 1 ครั้งจะวาดใหม่ทุกแถว (แถวละ ~16 element + ไอคอน SVG 2 ตัว)
@@ -164,10 +171,16 @@ export default function RackBlueprint({ rackId, highlightLevel, highlightSku, ca
   const unassigned = items.filter((item) => !item.level);
   const isFloor = Boolean(detail?.rack?.isFloor);
   const stagingProject = detail?.rack?.projectId ? (detail.rack.projectName || 'ไม่ผูกโครงการ') : null;
-  const levelItems = selectedLevel != null ? byLevel(selectedLevel) : [];
+  const levelItems = selectedLevel === NO_LEVEL ? unassigned : selectedLevel != null ? byLevel(selectedLevel) : [];
   const removeTitle = isFloor
     ? 'เอาสินค้าออกจากพื้นที่นี้ (ตำแหน่งอื่นของสินค้านี้ไม่ถูกแตะ)'
-    : `เอาสินค้าออกจากเลเวล ${selectedLevel} (ตำแหน่งอื่นของสินค้านี้ไม่ถูกแตะ)`;
+    : `เอาสินค้าออกจาก${levelName(selectedLevel)} (ตำแหน่งอื่นของสินค้านี้ไม่ถูกแตะ)`;
+  // ติ๊กที่ค้างจากเลเวลก่อนต้องล้างทิ้งทุกครั้งที่เปลี่ยนหน้า — ปุ่ม "เอาออกที่เลือก" จับด้วยรหัสสินค้า
+  // ถ้าสินค้าตัวเดียวกันวางทั้งเลเวล 1 และช่องไม่ระบุเลเวล ติ๊กจากหน้าหนึ่งจะไปลบของอีกหน้าโดยไม่รู้ตัว
+  const openLevel = (level) => {
+    setSelectedLevel(level);
+    setSelected(new Set());
+  };
   selectedLevelRef.current = selectedLevel;
   isFloorRef.current = isFloor;
   rackNameRef.current = detail?.rack?.name || '';
@@ -189,7 +202,7 @@ export default function RackBlueprint({ rackId, highlightLevel, highlightSku, ca
       : { roomId: Number(moving.roomId) };
     if (moving.kind === 'rack' && !to.rackId) return toast.error('เลือกชั้นวางปลายทางก่อน');
     if (moving.kind === 'room' && !to.roomId) return toast.error('เลือกพื้นที่ปลายทางก่อน');
-    if (moving.kind === 'rack' && to.rackId === Number(rackId) && String(to.storageLevel ?? '') === String(selectedLevel)) {
+    if (moving.kind === 'rack' && to.rackId === Number(rackId) && String(to.storageLevel ?? '') === String(levelValue(selectedLevel) ?? '')) {
       return toast.error('ปลายทางเป็นที่เดิม');
     }
 
@@ -200,7 +213,7 @@ export default function RackBlueprint({ rackId, highlightLevel, highlightSku, ca
       try {
         const result = await fetchApi('/api/storage-map/move-quantity', {
           method: 'POST',
-          body: JSON.stringify({ sku: row.sku, from: { rackId, storageLevel: selectedLevel }, to, quantity: row.quantity })
+          body: JSON.stringify({ sku: row.sku, from: { rackId, storageLevel: levelValue(selectedLevel) }, to, quantity: row.quantity })
         });
         if (result.success) moved += 1;
         else failed.push(`${row.sku} (${result.message || 'ไม่สำเร็จ'})`);
@@ -222,7 +235,7 @@ export default function RackBlueprint({ rackId, highlightLevel, highlightSku, ca
     const rows = levelItems.filter((item) => selected.has(item.sku));
     if (rows.length === 0) return;
     const ok = await confirmDialog({
-      title: `เอาสินค้าออกจาก${isFloor ? 'พื้นที่นี้' : `เลเวล ${selectedLevel}`}`,
+      title: `เอาสินค้าออกจาก${isFloor ? 'พื้นที่นี้' : levelName(selectedLevel)}`,
       message: `จะเอา ${rows.length} รายการออกจากตำแหน่งนี้ — ยอดคงเหลือของสินค้าไม่เปลี่ยน และตำแหน่งอื่นไม่ถูกแตะ`,
       confirmText: 'เอาออก',
       danger: true
@@ -236,7 +249,7 @@ export default function RackBlueprint({ rackId, highlightLevel, highlightSku, ca
       try {
         const result = await fetchApi('/api/storage-map/assign', {
           method: 'POST',
-          body: JSON.stringify({ sku: row.sku, rackId, level: selectedLevel, quantity: 0 })
+          body: JSON.stringify({ sku: row.sku, rackId, level: levelValue(selectedLevel), quantity: 0 })
         });
         if (result.success) done += 1;
         else failed.push(`${row.sku} (${result.message || 'ไม่สำเร็จ'})`);
@@ -282,13 +295,13 @@ export default function RackBlueprint({ rackId, highlightLevel, highlightSku, ca
   const setQtyHere = useCallback((item, value) => {
     const next = Number(value);
     if (!Number.isFinite(next) || next < 0 || next === Number(item.qtyHere)) return;
-    setLocation(item.sku, { sku: item.sku, rackId, level: selectedLevelRef.current, quantity: next });
+    setLocation(item.sku, { sku: item.sku, rackId, level: levelValue(selectedLevelRef.current), quantity: next });
   }, [rackId, setLocation]);
 
   // ถามยืนยันก่อนเสมอ — ปุ่มนี้อยู่ติดกับปุ่มย้าย กดพลาดแล้วสินค้าหลุดจากตำแหน่งทันทีโดยไม่มีอะไรเตือน
   const removeOne = useCallback(async (sku) => {
     const level = selectedLevelRef.current;
-    const where = isFloorRef.current ? rackNameRef.current : `เลเวล ${level}`;
+    const where = isFloorRef.current ? rackNameRef.current : levelName(level);
     const ok = await confirmDialog({
       title: `เอา ${sku} ออกจาก${where}`,
       message: 'ยอดคงเหลือของสินค้าไม่เปลี่ยน และตำแหน่งอื่นของสินค้านี้ไม่ถูกแตะ',
@@ -296,7 +309,7 @@ export default function RackBlueprint({ rackId, highlightLevel, highlightSku, ca
       danger: true
     });
     if (!ok) return;
-    setLocation(sku, { sku, rackId, level, quantity: 0 }, `เอา ${sku} ออกจาก${where} แล้ว`);
+    setLocation(sku, { sku, rackId, level: levelValue(level), quantity: 0 }, `เอา ${sku} ออกจาก${where} แล้ว`);
   }, [rackId, setLocation]);
 
   // เปิดป๊อปอัพย้าย พร้อมตั้งจำนวนตั้งต้น = ของที่มีอยู่ตรงนี้ (กดย้ายได้เลยโดยไม่ต้องแก้)
@@ -338,11 +351,11 @@ export default function RackBlueprint({ rackId, highlightLevel, highlightSku, ca
           <div>
             <h2 className="flex items-center gap-2 text-lg font-bold">
               {selectedLevel != null && !isFloor ? (
-                <button className="btn btn-xs btn-ghost btn-square" onClick={() => setSelectedLevel(null)} aria-label="ย้อนกลับ"><FiChevronLeft /></button>
+                <button className="btn btn-xs btn-ghost btn-square" onClick={() => openLevel(null)} aria-label="ย้อนกลับ"><FiChevronLeft /></button>
               ) : isFloor ? <FiLayers /> : <FiBox />}
               {isFloor
                 ? `${stagingProject ? 'พื้นที่จัดเตรียม' : 'พื้นที่วางพื้น'} ${rack.name}`
-                : selectedLevel != null ? `ชั้นวาง ${rack.name} · เลเวล ${selectedLevel}` : `ชั้นวาง ${rack.name}`}
+                : selectedLevel != null ? `ชั้นวาง ${rack.name} · ${levelName(selectedLevel)}` : `ชั้นวาง ${rack.name}`}
               {stagingProject && <span className="badge badge-warning badge-sm">📦 {stagingProject}</span>}
             </h2>
             <p className="mt-1 text-sm text-base-content/60">
@@ -358,7 +371,14 @@ export default function RackBlueprint({ rackId, highlightLevel, highlightSku, ca
 
         {selectedLevel != null ? (
           <div className="p-5">
-            {canEdit && (
+            {/* ช่องนี้มีไว้ให้ "ย้ายออก" ไปเลเวลที่ถูก จึงไม่มีปุ่มเพิ่มสินค้า — ไม่อยากให้ของที่ไม่รู้เลเวลงอกเพิ่ม */}
+            {canEdit && selectedLevel === NO_LEVEL && (
+              <p className="mb-3 rounded-xl border border-warning/40 bg-warning/10 p-3 text-sm">
+                ของในช่องนี้ระบบรู้แค่ว่าอยู่บนชั้น {rack.name} แต่ไม่รู้ว่าเลเวลไหน — ใบหยิบของจึงบอกคนหยิบได้แค่ชื่อชั้น
+                กดปุ่ม <FiPackage className="inline text-warning" /> ท้ายแถวแล้วเลือกเลเวลที่ของวางอยู่จริง
+              </p>
+            )}
+            {canEdit && selectedLevel !== NO_LEVEL && (
               <div className="mb-3">
                 {!adding ? (
                   <button className="btn btn-sm btn-outline btn-primary" onClick={() => { setAdding(true); setQuery(''); }}>
@@ -468,7 +488,7 @@ export default function RackBlueprint({ rackId, highlightLevel, highlightSku, ca
                 <button
                   key={level}
                   type="button"
-                  onClick={() => setSelectedLevel(level)}
+                  onClick={() => openLevel(level)}
                   className={`w-full rounded-xl border p-4 text-left transition-colors hover:bg-base-200/70 ${highlighted ? 'border-warning bg-warning/10 ring-2 ring-warning/40' : 'border-base-300 bg-base-200/40'}`}
                 >
                   <div className="mb-2 flex items-center gap-2 text-sm font-bold">
@@ -491,14 +511,32 @@ export default function RackBlueprint({ rackId, highlightLevel, highlightSku, ca
               );
             })}
 
-            {unassigned.length > 0 && (
-              <div className="rounded-xl border border-dashed border-base-300 p-4">
-                <div className="mb-2 text-sm font-bold text-base-content/60">ยังไม่ระบุเลเวล ({unassigned.length})</div>
-                <div className="flex flex-wrap gap-1.5">
-                  {unassigned.map((item) => <span key={item.sku} className="badge badge-sm badge-ghost font-mono">{item.sku}</span>)}
-                </div>
-              </div>
-            )}
+            {unassigned.length > 0 && (() => {
+              // ค้นหาเจอของที่ไม่มีเลเวล → ผังส่งมาแค่รหัสสินค้า ไม่มีเลขเลเวลให้เทียบ จึงดูว่าอยู่ในช่องนี้ไหมแทน
+              const highlighted = highlightLevel == null && unassigned.some((item) => item.sku === highlightSku);
+              return (
+                <button
+                  type="button"
+                  onClick={() => openLevel(NO_LEVEL)}
+                  className={`w-full rounded-xl border border-dashed p-4 text-left transition-colors hover:bg-base-200/70 ${highlighted ? 'border-warning bg-warning/10 ring-2 ring-warning/40' : 'border-base-300'}`}
+                >
+                  <div className="mb-2 flex items-center gap-2 text-sm font-bold text-base-content/60">
+                    ยังไม่ระบุเลเวล
+                    {highlighted && <span className="badge badge-warning badge-sm">ตำแหน่งที่ค้นหา</span>}
+                    <span className="font-normal text-base-content/50">
+                      ({unassigned.length} รายการ · {unassigned.reduce((sum, row) => sum + Number(row.qtyHere || 0), 0)} ชิ้น)
+                    </span>
+                  </div>
+                  <div className="flex flex-wrap gap-1.5">
+                    {unassigned.map((item) => (
+                      <span key={item.sku} className={`badge badge-sm ${highlightSku === item.sku ? 'badge-warning' : 'badge-ghost'}`} title={item.name}>
+                        <span className="font-mono">{item.sku}</span>
+                      </span>
+                    ))}
+                  </div>
+                </button>
+              );
+            })()}
           </div>
         )}
       </section>
@@ -521,7 +559,7 @@ export default function RackBlueprint({ rackId, highlightLevel, highlightSku, ca
                 <div className="min-w-0 flex-1">
                   <h3 className="text-base font-bold">ย้ายสินค้า {moving.items.length} รายการ</h3>
                   <p className="mt-0.5 text-xs text-base-content/60">
-                    จาก {rack.name}{isFloor ? '' : ` · เลเวล ${selectedLevel}`} · รวม {totalQty} ชิ้น
+                    จาก {rack.name}{isFloor ? '' : ` · ${levelName(selectedLevel)}`} · รวม {totalQty} ชิ้น
                   </p>
                 </div>
                 <button className="btn btn-sm btn-ghost btn-square" onClick={() => setMoving(null)} disabled={saving} aria-label="ปิด"><FiX /></button>
