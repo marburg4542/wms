@@ -28,7 +28,7 @@ const makeDb = () => {
     CREATE VIEW warehouse_balance AS SELECT 'HAMMER' AS item_id, 5 AS stock_balance;
     INSERT INTO items (item_id) VALUES ('HAMMER');
     INSERT INTO rooms (id, name, plan_id) VALUES (1, 'โซนจัดเตรียม TAI', 7), (2, 'ห้องเก็บของ 1', 7);
-    INSERT INTO storage_racks (id, name, levels, room_id, plan_id, is_floor) VALUES (10, 'A1', 3, 2, 7, 0), (11, 'A2', 3, NULL, 7, 1);
+    INSERT INTO storage_racks (id, name, levels, room_id, plan_id, is_floor) VALUES (10, 'A1', 3, 2, 7, 0), (11, 'A2', 3, NULL, 7, 1), (12, 'C1', 1, 2, 7, 0);
   `);
   return db;
 };
@@ -111,6 +111,37 @@ test('เลเวลคนละชั้นของชั้นวางเ�
   setLocationQuantity(db, { itemId: 'HAMMER', rackId: 10, storageLevel: 2, quantity: 3 });
   assert.equal(getItemLocations(db, 'HAMMER').locations.length, 2);
   assert.equal(getPlacedTotal(db, 'HAMMER'), 5);
+});
+
+// ของที่วางโดยไม่ระบุเลเวลจะกลายเป็นตำแหน่งลอยๆ ที่คนไปยืนหน้าชั้นแล้วไม่รู้ว่าอยู่ชั้นไหน
+test('ชั้นวางที่แบ่งเลเวลต้องระบุเลเวลเสมอ', () => {
+  const db = makeDb();
+  assert.throws(
+    () => setLocationQuantity(db, { itemId: 'HAMMER', rackId: 10, quantity: 2 }),
+    (err) => err instanceof LocationError && /ระบุเลเวล/.test(err.message)
+  );
+  assert.equal(getPlacedTotal(db, 'HAMMER'), 0, 'ต้องไม่มีแถวตำแหน่งที่ไม่ระบุเลเวลค้างไว้');
+});
+
+test('ชั้นวางที่มีเลเวลเดียวเติมให้เอง ส่วนพื้นที่วางพื้นไม่ต้องมีเลเวล', () => {
+  const db = makeDb();
+  const single = setLocationQuantity(db, { itemId: 'HAMMER', rackId: 12, quantity: 2 });
+  assert.equal(single.locations.find((row) => row.rackId === 12).storageLevel, 1, 'ไม่มีอะไรให้เลือก ระบบต้องเติมเลเวล 1 ให้');
+
+  const floor = setLocationQuantity(db, { itemId: 'HAMMER', rackId: 11, quantity: 1 });
+  assert.equal(floor.locations.find((row) => row.rackId === 11).storageLevel, null, 'พื้นที่วางพื้นไม่มีเลเวลตามเดิม');
+});
+
+test('ย้ายไปชั้นที่แบ่งเลเวลโดยไม่ระบุเลเวล ต้องไม่ย้าย และของต้นทางต้องอยู่ครบ', () => {
+  const db = makeDb();
+  setLocationQuantity(db, { itemId: 'HAMMER', rackId: 10, storageLevel: 1, quantity: 5 });
+  assert.throws(
+    () => moveQuantity(db, { itemId: 'HAMMER', from: { rackId: 10, storageLevel: 1 }, to: { rackId: 10, storageLevel: null }, quantity: 2 }),
+    /ระบุเลเวล/
+  );
+  // ย้ายเป็นทรานแซกชันเดียว — ปลายทางถูกปฏิเสธแล้วต้นทางต้องไม่โดนหักค้างไว้
+  assert.equal(qtyAt(db, 'rack_id = 10 AND storage_level = 1'), 5);
+  assert.equal(getItemLocations(db, 'HAMMER').locations.length, 1);
 });
 
 test('ตรวจค่าที่ไม่ถูกต้อง', () => {

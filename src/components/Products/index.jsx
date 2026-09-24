@@ -293,9 +293,27 @@ export default function Products() {
     }
   };
 
+  // ชั้นวางที่แบ่งเลเวลต้องเลือกเลเวลด้วย — เช็กตอนสร้างสินค้าใหม่เท่านั้น
+  // (ตอนแก้ไขช่องนี้อ่านอย่างเดียว เพราะของอาจกระจายหลายที่แล้ว ต้องไปจัดการที่ผังคลัง)
+  const pickedRack = racks.find((entry) => String(entry.id) === String(productForm.rackId));
+  const missingLocationField = !editingSku && productForm.rackId && !pickedRack?.isFloor && !productForm.storageLevel
+    ? `เลเวลของชั้นวาง ${pickedRack?.name || ''}`.trim()
+    : null;
+
   const submitProduct = async (event) => {
     event.preventDefault();
     if (!productForm.name.trim()) return toast.error('กรุณาระบุชื่อสินค้า');
+
+    // เลือกชั้นวางที่แบ่งเลเวลไว้ ต้องระบุเลเวลด้วย ไม่งั้นของตั้งต้นจะไปอยู่เป็นตำแหน่งลอยๆ ที่หาไม่เจอหน้าชั้น
+    if (missingLocationField) {
+      return confirmDialog({
+        title: 'ยังระบุข้อมูลไม่ครบ',
+        message: `โปรดระบุ\n• ${missingLocationField}`,
+        confirmText: 'รับทราบ',
+        cancelText: 'ปิด',
+        danger: true
+      });
+    }
 
     // ย้ายหมวด = ระบบออกรหัสใหม่ให้เอง คนไม่ต้องพิมพ์ (และห้ามพิมพ์แข่ง เดี๋ยวได้รหัสชนของเดิม)
     const movingGroup = Boolean(editingSku) && editingGroupId != null && productForm.groupId !== editingGroupId;
@@ -783,16 +801,23 @@ export default function Products() {
                     <label className="form-control">
                       <span className="label-text text-xs font-bold">ชั้นวาง (ตำแหน่งจัดเก็บ)</span>
                       <select className="select select-bordered" value={productForm.rackId}
-                        onChange={(e) => setProductForm({ ...productForm, rackId: e.target.value, storageLevel: '' })}>
+                        onChange={(e) => {
+                          // ชั้นที่มีเลเวลเดียวเติมให้เลย ไม่มีอะไรให้เลือก
+                          const picked = racks.find((r) => String(r.id) === String(e.target.value));
+                          const autoLevel = picked && !picked.isFloor && Number(picked.levels) === 1 ? '1' : '';
+                          setProductForm({ ...productForm, rackId: e.target.value, storageLevel: autoLevel });
+                        }}>
                         <option value="">— ไม่ระบุ —</option>
                         {racks.map(r => <option key={r.id} value={r.id}>{r.roomName ? `${r.roomName} / ${r.name}` : `${r.planName || 'ผัง'} · ${r.name}`}</option>)}
                       </select>
                     </label>
                     <label className="form-control">
                       <span className="label-text text-xs font-bold">เลเวล</span>
-                      <select className="select select-bordered" value={productForm.storageLevel} disabled={!productForm.rackId}
+                      <select className={`select select-bordered ${missingLocationField ? 'select-warning' : ''}`}
+                        value={productForm.storageLevel}
+                        disabled={!productForm.rackId || racks.find((r) => String(r.id) === String(productForm.rackId))?.isFloor}
                         onChange={(e) => setProductForm({ ...productForm, storageLevel: e.target.value })}>
-                        <option value="">— เลือกเลเวล —</option>
+                        <option value="">{racks.find((r) => String(r.id) === String(productForm.rackId))?.isFloor ? 'วางกับพื้น' : '— เลือกเลเวล —'}</option>
                         {Array.from({ length: racks.find(r => String(r.id) === String(productForm.rackId))?.levels || 0 }, (_, i) => (
                           <option key={i + 1} value={i + 1}>เลเวล {i + 1}</option>
                         ))}
@@ -868,12 +893,18 @@ export default function Products() {
                   <span className="label-text-alt opacity-60 mt-1">ถ่ายสดหรือเลือกจากเครื่อง · JPG, PNG, WEBP ไม่เกิน 5MB</span>
                 </label>
               </div>
+              {missingLocationField && (
+                <p className="text-xs font-semibold text-warning">ยังระบุไม่ครบ: {missingLocationField}</p>
+              )}
               <div className="flex justify-end gap-3 pt-4 border-t border-base-200">
                 <button type="button" className="btn btn-ghost" onClick={() => setProductModal(false)} disabled={submitting}>ยกเลิก</button>
-                <button type="submit" className="btn btn-primary text-white" disabled={submitting}>
-                  {submitting && <span className="loading loading-spinner loading-xs"></span>}
-                  บันทึก
-                </button>
+                {/* ปุ่ม disabled ไม่ส่ง event ออกมา จึงครอบ span ไว้ให้ยังกดแล้วมีป๊อปอัพบอกว่าขาดอะไร */}
+                <span onClick={() => { if (missingLocationField && !submitting) submitProduct(new Event('submit')); }}>
+                  <button type="submit" className="btn btn-primary text-white" disabled={submitting || Boolean(missingLocationField)}>
+                    {submitting && <span className="loading loading-spinner loading-xs"></span>}
+                    บันทึก
+                  </button>
+                </span>
               </div>
             </form>
           </div>

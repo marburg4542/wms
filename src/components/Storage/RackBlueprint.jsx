@@ -188,20 +188,62 @@ export default function RackBlueprint({ rackId, highlightLevel, highlightSku, ca
 
   // ย้ายของจากเลเวลนี้ไปที่อื่น — ชั้นวางอื่น (ระบุเลเวลได้) หรือพื้นที่/โซนจัดเตรียม
   // ย้ายได้ทีละหลายรายการ: ยิงทีละตัวแล้วรวมผล ตัวที่พลาดไม่ทำให้ตัวที่เหลือค้าง
+  // ช่องที่ยังกรอกไม่ครบ — ใช้ทั้งปิดปุ่มย้ายและบอกผู้ใช้ว่าขาดอะไร
+  // ของที่วางโดยไม่ระบุเลเวลจะกลายเป็นตำแหน่งลอยๆ ที่คนไปยืนหน้าชั้นแล้วหาไม่เจอ จึงต้องกันตั้งแต่ตรงนี้
+  const missingMoveFields = (draft) => {
+    if (!draft) return [];
+    const target = allRacks.find((entry) => Number(entry.id) === Number(draft.rackId));
+    const missing = [];
+    if (draft.kind === 'rack') {
+      if (!draft.rackId) missing.push('ชั้นวางปลายทาง');
+      else if (!target?.isFloor && !draft.level) missing.push(`เลเวลของชั้นวาง ${target?.name || 'ปลายทาง'}`);
+    } else if (!draft.roomId) {
+      missing.push('พื้นที่ปลายทาง');
+    }
+    const usable = (draft.items || []).filter((row) => Number(row.quantity) > 0);
+    if (usable.length === 0) missing.push('จำนวนที่จะย้ายอย่างน้อย 1 รายการ');
+    return missing;
+  };
+
+  const warnMissing = (missing) => confirmDialog({
+    title: 'ยังระบุข้อมูลไม่ครบ',
+    message: `โปรดระบุ${missing.length > 1 ? ':' : ''}\n${missing.map((item) => `• ${item}`).join('\n')}`,
+    confirmText: 'รับทราบ',
+    cancelText: 'ปิด',
+    danger: true
+  });
+
+  // ปิดหน้าต่างระหว่างกรอก = ไม่ย้ายอะไรเลย แต่ถามก่อน กันเผลอคลิกพื้นหลังแล้วที่กรอกไว้หายทั้งชุด
+  const closeMove = async () => {
+    if (saving) return;
+    const touched = Boolean(moving?.rackId || moving?.roomId || moving?.level);
+    if (touched) {
+      const ok = await confirmDialog({
+        title: 'ออกจากหน้าต่างย้ายสินค้า?',
+        message: 'ข้อมูลที่กรอกไว้จะหายไป และสินค้าจะไม่ถูกย้าย',
+        confirmText: 'ออกโดยไม่ย้าย',
+        cancelText: 'กรอกต่อ',
+        danger: true
+      });
+      if (!ok) return;
+    }
+    setMoving(null);
+  };
+
   const moveItems = async () => {
+    const missing = missingMoveFields(moving);
+    if (missing.length > 0) return warnMissing(missing);
+
     const rows = (moving?.items || []).map((row) => ({ ...row, quantity: Number(row.quantity) }));
     const usable = rows.filter((row) => Number.isFinite(row.quantity) && row.quantity > 0);
-    if (usable.length === 0) return toast.error('ระบุจำนวนที่จะย้ายอย่างน้อย 1 รายการ');
     const tooMany = usable.find((row) => row.quantity > Number(row.max));
     if (tooMany) return toast.error(`${tooMany.sku} ตรงนี้มีของแค่ ${tooMany.max} ชิ้น`);
 
     const target = allRacks.find((entry) => Number(entry.id) === Number(moving.rackId));
     const to = moving.kind === 'rack'
       // พื้นที่วางพื้นมีที่วางเดียว ไม่ต้องให้ผู้ใช้เลือกเลเวล ระบบใส่ 1 ให้เอง
-      ? { rackId: Number(moving.rackId), storageLevel: target?.isFloor ? 1 : (moving.level === '' ? null : Number(moving.level)) }
+      ? { rackId: Number(moving.rackId), storageLevel: target?.isFloor ? 1 : Number(moving.level) }
       : { roomId: Number(moving.roomId) };
-    if (moving.kind === 'rack' && !to.rackId) return toast.error('เลือกชั้นวางปลายทางก่อน');
-    if (moving.kind === 'room' && !to.roomId) return toast.error('เลือกพื้นที่ปลายทางก่อน');
     if (moving.kind === 'rack' && to.rackId === Number(rackId) && String(to.storageLevel ?? '') === String(levelValue(selectedLevel) ?? '')) {
       return toast.error('ปลายทางเป็นที่เดิม');
     }
@@ -547,12 +589,13 @@ export default function RackBlueprint({ rackId, highlightLevel, highlightSku, ca
         const targetRack = allRacks.find((entry) => Number(entry.id) === Number(moving.rackId));
         const targetRoom = allRooms.find((entry) => Number(entry.id) === Number(moving.roomId));
         const totalQty = moving.items.reduce((sum, row) => sum + (Number(row.quantity) || 0), 0);
+        const missing = missingMoveFields(moving);
         const setQty = (sku, value) => setMoving({
           ...moving,
           items: moving.items.map((row) => (row.sku === sku ? { ...row, quantity: value } : row))
         });
         return (
-          <div className="fixed inset-0 z-[110] flex items-center justify-center bg-base-300/40 p-4 backdrop-blur-md" onClick={(event) => { event.stopPropagation(); if (!saving) setMoving(null); }}>
+          <div className="fixed inset-0 z-[110] flex items-center justify-center bg-base-300/40 p-4 backdrop-blur-md" onClick={(event) => { event.stopPropagation(); closeMove(); }}>
             <section className="glass-modal max-h-[88vh] w-full max-w-2xl overflow-hidden rounded-2xl" onClick={(event) => event.stopPropagation()}>
               <header className="flex items-start gap-3 border-b border-base-300 p-5">
                 <FiPackage className="mt-1 shrink-0 text-warning" />
@@ -562,7 +605,7 @@ export default function RackBlueprint({ rackId, highlightLevel, highlightSku, ca
                     จาก {rack.name}{isFloor ? '' : ` · ${levelName(selectedLevel)}`} · รวม {totalQty} ชิ้น
                   </p>
                 </div>
-                <button className="btn btn-sm btn-ghost btn-square" onClick={() => setMoving(null)} disabled={saving} aria-label="ปิด"><FiX /></button>
+                <button className="btn btn-sm btn-ghost btn-square" onClick={closeMove} disabled={saving} aria-label="ปิด"><FiX /></button>
               </header>
 
               <div className="max-h-[42vh] overflow-y-auto border-b border-base-300 p-4">
@@ -600,9 +643,14 @@ export default function RackBlueprint({ rackId, highlightLevel, highlightSku, ca
                 <div className="flex flex-wrap items-center gap-2">
                   {moving.kind === 'rack' ? (
                     <>
-                      <select className="select select-bordered select-sm min-w-52 flex-1"
+                      <select className={`select select-bordered select-sm min-w-52 flex-1 ${moving.rackId ? '' : 'select-warning'}`}
                         value={moving.rackId}
-                        onChange={(event) => setMoving({ ...moving, rackId: event.target.value, level: '' })}>
+                        onChange={(event) => {
+                          // ชั้นที่มีเลเวลเดียวไม่มีอะไรให้เลือก เติมให้เลย จะได้ไม่ต้องกดเปล่าๆ
+                          const picked = allRacks.find((entry) => Number(entry.id) === Number(event.target.value));
+                          const autoLevel = picked && !picked.isFloor && Number(picked.levels) === 1 ? '1' : '';
+                          setMoving({ ...moving, rackId: event.target.value, level: autoLevel });
+                        }}>
                         <option value="">— เลือกชั้นวาง —</option>
                         {allRacks.map((entry) => (
                           <option key={entry.id} value={entry.id}>
@@ -615,11 +663,11 @@ export default function RackBlueprint({ rackId, highlightLevel, highlightSku, ca
                       {targetRack?.isFloor ? (
                         <span className="badge badge-ghost">วางกับพื้น</span>
                       ) : (
-                        <select className="select select-bordered select-sm w-36"
+                        <select className={`select select-bordered select-sm w-36 ${targetRack && !moving.level ? 'select-warning' : ''}`}
                           value={moving.level}
                           disabled={!targetRack}
                           onChange={(event) => setMoving({ ...moving, level: event.target.value })}>
-                          <option value="">ไม่ระบุเลเวล</option>
+                          <option value="">— เลือกเลเวล —</option>
                           {Array.from({ length: targetRack?.levels || 0 }, (_, index) => index + 1).map((level) => (
                             <option key={level} value={level}>เลเวล {level}</option>
                           ))}
@@ -647,12 +695,20 @@ export default function RackBlueprint({ rackId, highlightLevel, highlightSku, ca
                     : 'ย้ายที่วางเท่านั้น ยอดคงเหลือรวมของสินค้าไม่เปลี่ยน'}
                 </p>
 
+                {missing.length > 0 && (
+                  <p className="text-xs font-semibold text-warning">ยังระบุไม่ครบ: {missing.join(' · ')}</p>
+                )}
+
                 <div className="flex justify-end gap-2 border-t border-base-300 pt-3">
-                  <button className="btn btn-ghost" onClick={() => setMoving(null)} disabled={saving}>ยกเลิก</button>
-                  <button className="btn btn-warning gap-1" onClick={moveItems} disabled={saving}>
-                    {saving && <span className="loading loading-spinner loading-xs" />}
-                    ย้าย {moving.items.length} รายการ
-                  </button>
+                  <button className="btn btn-ghost" onClick={closeMove} disabled={saving}>ยกเลิก</button>
+                  {/* ปุ่มถูกปิดตอนกรอกไม่ครบ — ครอบด้วย span เพื่อให้ยังกดแล้วมีป๊อปอัพบอกว่าขาดอะไร
+                      (ปุ่ม disabled ไม่ส่ง event ออกมา ถ้าไม่ครอบไว้ ผู้ใช้จะกดแล้วเงียบไม่รู้สาเหตุ) */}
+                  <span onClick={() => { if (missing.length > 0 && !saving) warnMissing(missing); }}>
+                    <button className="btn btn-warning gap-1" onClick={moveItems} disabled={saving || missing.length > 0}>
+                      {saving && <span className="loading loading-spinner loading-xs" />}
+                      ย้าย {moving.items.length} รายการ
+                    </button>
+                  </span>
                 </div>
               </div>
             </section>

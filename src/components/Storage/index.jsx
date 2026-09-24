@@ -599,9 +599,29 @@ function UnassignedModal({ onClose, onAssigned }) {
     return () => clearTimeout(timer);
   }, [search, load]);
 
+  // ช่องที่ยังไม่ได้กรอกของแถวนั้น — ใช้ทั้งปิดปุ่มบันทึกและบอกว่าขาดอะไร
+  // ชั้นวางที่แบ่งเลเวลต้องระบุเลเวลเสมอ ไม่งั้นของจะไปอยู่เป็นตำแหน่งลอยๆ ที่หาไม่เจอหน้าชั้น
+  const missingFor = (sku) => {
+    const choice = draft[sku] || {};
+    const rack = racks.find((entry) => entry.id === Number(choice.rackId));
+    const missing = [];
+    if (!choice.rackId) missing.push('ชั้นวาง');
+    else if (!rack?.isFloor && !choice.level) missing.push(`เลเวลของชั้นวาง ${rack?.name || ''}`.trim());
+    return missing;
+  };
+
   const assign = async (item) => {
     const choice = draft[item.sku] || {};
-    if (!choice.rackId) return toast.error('เลือกชั้นวางก่อน');
+    const missing = missingFor(item.sku);
+    if (missing.length > 0) {
+      return confirmDialog({
+        title: 'ยังระบุข้อมูลไม่ครบ',
+        message: `โปรดระบุ\n${missing.map((field) => `• ${field}`).join('\n')}`,
+        confirmText: 'รับทราบ',
+        cancelText: 'ปิด',
+        danger: true
+      });
+    }
     setSaving(item.sku);
     try {
       const result = await fetchApi('/api/storage-map/assign', {
@@ -629,8 +649,24 @@ function UnassignedModal({ onClose, onAssigned }) {
 
   const rackOf = (sku) => racks.find((rack) => rack.id === Number(draft[sku]?.rackId));
 
+  // เลือกที่เก็บไว้แล้วแต่ยังไม่กดบันทึก ปิดหน้าต่างไปเลยของจะไม่ถูกวาง — ถามก่อนกันกดพลาด
+  const closeGuarded = async () => {
+    const pending = Object.values(draft).filter((choice) => choice?.rackId || choice?.level || choice?.quantity);
+    if (pending.length > 0) {
+      const ok = await confirmDialog({
+        title: 'ปิดหน้าต่างนี้?',
+        message: `ยังมี ${pending.length} รายการที่เลือกที่เก็บไว้แต่ยังไม่ได้กดบันทึก — ปิดแล้วจะไม่ถูกบันทึก`,
+        confirmText: 'ปิดโดยไม่บันทึก',
+        cancelText: 'กลับไปกรอกต่อ',
+        danger: true
+      });
+      if (!ok) return;
+    }
+    onClose?.();
+  };
+
   return (
-    <div className="fixed inset-0 z-100 flex items-center justify-center bg-base-300/45 p-4 backdrop-blur-sm" onClick={onClose}>
+    <div className="fixed inset-0 z-100 flex items-center justify-center bg-base-300/45 p-4 backdrop-blur-sm" onClick={closeGuarded}>
       <section className="glass-modal max-h-[86vh] w-full max-w-3xl overflow-hidden rounded-2xl" onClick={(event) => event.stopPropagation()}>
         <header className="flex items-center gap-3 border-b border-base-300 p-4">
           <FiPackage className="text-primary" />
@@ -638,7 +674,7 @@ function UnassignedModal({ onClose, onAssigned }) {
             <h2 className="text-base font-bold">สินค้ายังไม่ระบุตำแหน่งจัดเก็บ</h2>
             <p className="text-xs text-base-content/60">เหลือ {total} รายการที่ยังวางไม่ครบ — เลือกที่เก็บและระบุจำนวน</p>
           </div>
-          <button className="btn btn-sm btn-ghost btn-square" onClick={onClose} aria-label="ปิด"><FiX /></button>
+          <button className="btn btn-sm btn-ghost btn-square" onClick={closeGuarded} aria-label="ปิด"><FiX /></button>
         </header>
 
         <div className="border-b border-base-300 p-3">
@@ -676,9 +712,14 @@ function UnassignedModal({ onClose, onAssigned }) {
                   </div>
                 </div>
                 <select
-                  className="select select-bordered select-sm w-36"
+                  className={`select select-bordered select-sm w-36 ${draft[item.sku]?.rackId ? '' : 'select-warning'}`}
                   value={draft[item.sku]?.rackId || ''}
-                  onChange={(event) => setDraft((current) => ({ ...current, [item.sku]: { rackId: event.target.value, level: '' } }))}
+                  onChange={(event) => setDraft((current) => {
+                    // ชั้นที่มีเลเวลเดียวเติมให้เลย ไม่มีอะไรให้เลือก
+                    const picked = racks.find((entry) => entry.id === Number(event.target.value));
+                    const autoLevel = picked && !picked.isFloor && Number(picked.levels) === 1 ? '1' : '';
+                    return { ...current, [item.sku]: { ...current[item.sku], rackId: event.target.value, level: autoLevel } };
+                  })}
                 >
                   <option value="">— เลือกชั้นวาง —</option>
                   {racks.map((option) => (
@@ -688,12 +729,12 @@ function UnassignedModal({ onClose, onAssigned }) {
                   ))}
                 </select>
                 <select
-                  className="select select-bordered select-sm w-28"
+                  className={`select select-bordered select-sm w-28 ${rack && !rack.isFloor && !draft[item.sku]?.level ? 'select-warning' : ''}`}
                   value={draft[item.sku]?.level || ''}
-                  disabled={!rack}
+                  disabled={!rack || rack.isFloor}
                   onChange={(event) => setDraft((current) => ({ ...current, [item.sku]: { ...current[item.sku], level: event.target.value } }))}
                 >
-                  <option value="">ไม่ระบุเลเวล</option>
+                  <option value="">{rack?.isFloor ? 'วางกับพื้น' : '— เลือกเลเวล —'}</option>
                   {Array.from({ length: rack?.levels || 0 }, (_, index) => index + 1).map((level) => (
                     <option key={level} value={level}>เลเวล {level}</option>
                   ))}
@@ -706,13 +747,16 @@ function UnassignedModal({ onClose, onAssigned }) {
                   onChange={(event) => setDraft((current) => ({ ...current, [item.sku]: { ...current[item.sku], quantity: event.target.value } }))}
                   title="ไม่กรอก = ใส่ของที่ยังไม่ระบุตำแหน่งทั้งหมด"
                 />
-                <button
-                  className="btn btn-sm btn-primary"
-                  disabled={!draft[item.sku]?.rackId || saving === item.sku}
-                  onClick={() => assign(item)}
-                >
-                  {saving === item.sku ? <span className="loading loading-spinner loading-xs" /> : 'บันทึก'}
-                </button>
+                {/* ปุ่ม disabled ไม่ส่ง event ออกมา จึงครอบ span ไว้ให้ยังกดแล้วมีป๊อปอัพบอกว่าขาดอะไร */}
+                <span onClick={() => { if (missingFor(item.sku).length > 0 && saving !== item.sku) assign(item); }}>
+                  <button
+                    className="btn btn-sm btn-primary"
+                    disabled={missingFor(item.sku).length > 0 || saving === item.sku}
+                    onClick={() => assign(item)}
+                  >
+                    {saving === item.sku ? <span className="loading loading-spinner loading-xs" /> : 'บันทึก'}
+                  </button>
+                </span>
               </div>
             );
           })}
