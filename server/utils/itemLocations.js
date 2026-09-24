@@ -111,8 +111,21 @@ export const setLocationQuantity = (db, { itemId, rackId = null, storageLevel = 
       // ชั้นวางที่แบ่งเลเวลต้องระบุเลเวลเสมอ — แถวที่ไม่มีเลเวลจะกลายเป็นตำแหน่งลอยๆ
       // ที่คนไปยืนหน้าชั้นแล้วไม่รู้ว่าของอยู่ชั้นไหน และนับเป็นคนละตำแหน่งกับของตัวเดียวกันที่ระบุเลเวลไว้
       // ชั้นที่มีเลเวลเดียวไม่มีอะไรให้เลือก เติมให้เลย (พื้นที่วางพื้น/จัดเตรียมไม่มีเลเวลอยู่แล้ว จึงข้ามกฎนี้)
-      if (Number(rack.levels) === 1) level = 1;
-      else throw new LocationError(`กรุณาระบุเลเวลของชั้นวาง ${rack.name} (มี ${rack.levels} เลเวล)`);
+      //
+      // ยกเว้นแถวเก่าที่ค้างอยู่ก่อนมีกฎนี้: ลดหรือเอาออกได้ แต่เพิ่มไม่ได้ — หลักเดียวกับเพดานยอดวางด้านล่าง
+      // ถ้าห้ามหมด ของที่ค้างจะแก้ได้ทางเดียวคือย้าย เอาออกไม่ได้แม้ของจริงไม่อยู่บนชั้นแล้ว
+      // ต้องเช็กก่อนเติมเลเวล 1 ให้ชั้นเลเวลเดียว ไม่งั้นคำสั่งเอาแถวค้างออกจะไปลงเลเวล 1 แทน แล้วตอบว่าสำเร็จ
+      const stuck = db.prepare('SELECT quantity FROM item_locations WHERE item_id = ? AND rack_id = ? AND storage_level IS NULL')
+        .get(sku, rack.id);
+      const wanted = mode === 'add' ? Number(stuck?.quantity || 0) + qty : qty;
+      if (!stuck || wanted > Number(stuck.quantity)) {
+        if (Number(rack.levels) === 1) level = 1;
+        else if (stuck) {
+          throw new LocationError(
+            `ช่องยังไม่ระบุเลเวลของชั้นวาง ${rack.name} มี ${sku} อยู่ ${stuck.quantity} เพิ่มไม่ได้ — ลดจำนวน เอาออก หรือย้ายไปเลเวลที่ถูกได้อย่างเดียว`
+          );
+        } else throw new LocationError(`กรุณาระบุเลเวลของชั้นวาง ${rack.name} (มี ${rack.levels} เลเวล)`);
+      }
     }
     existing = db.prepare(
       'SELECT id, quantity FROM item_locations WHERE item_id = ? AND rack_id = ? AND IFNULL(storage_level, -1) = IFNULL(?, -1)'

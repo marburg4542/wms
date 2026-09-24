@@ -144,6 +144,62 @@ test('ย้ายไปชั้นที่แบ่งเลเวลโด�
   assert.equal(getItemLocations(db, 'HAMMER').locations.length, 1);
 });
 
+// ข้อมูลเก่าก่อนมีกฎบังคับเลเวล — สร้างผ่าน setLocationQuantity ไม่ได้แล้ว จึงเขียนตรงเข้าตาราง
+// (ของจริงมีอยู่: 02003 จำนวน 4 บนชั้น A5 ค้างมาตั้งแต่ 1 ก.ย. 2026)
+const insertLegacyNoLevel = (db, rackId, quantity) => db.prepare(
+  'INSERT INTO item_locations (item_id, rack_id, storage_level, quantity) VALUES (?, ?, NULL, ?)'
+).run('HAMMER', rackId, quantity);
+
+// กฎบังคับเลเวลกันของใหม่ แต่ต้องไม่ล็อกของเก่าที่ค้างอยู่จนเหลือทางเดียวคือแก้ฐานข้อมูลเอง
+test('ของค้างในช่องไม่ระบุเลเวล (ข้อมูลเก่า) เอาออกได้', () => {
+  const db = makeDb();
+  insertLegacyNoLevel(db, 10, 4);
+  setLocationQuantity(db, { itemId: 'HAMMER', rackId: 10, storageLevel: null, quantity: 0 });
+  assert.equal(getPlacedTotal(db, 'HAMMER'), 0);
+});
+
+test('ของค้างในช่องไม่ระบุเลเวล ลดจำนวนได้ แต่เพิ่มไม่ได้', () => {
+  const db = makeDb();
+  insertLegacyNoLevel(db, 10, 4);
+  setLocationQuantity(db, { itemId: 'HAMMER', rackId: 10, storageLevel: null, quantity: 2 });
+  assert.equal(qtyAt(db, 'rack_id = 10 AND storage_level IS NULL'), 2);
+
+  // เพิ่ม = สร้างของลอยๆ เพิ่ม ต้องไม่ผ่านทั้งแบบตั้งตัวเลขและแบบเติม
+  assert.throws(
+    () => setLocationQuantity(db, { itemId: 'HAMMER', rackId: 10, storageLevel: null, quantity: 3 }),
+    (err) => err instanceof LocationError && /ยังไม่ระบุเลเวล/.test(err.message) && /2/.test(err.message)
+  );
+  assert.throws(
+    () => setLocationQuantity(db, { itemId: 'HAMMER', rackId: 10, storageLevel: null, quantity: 1, mode: 'add' }),
+    /ยังไม่ระบุเลเวล/
+  );
+  assert.equal(qtyAt(db, 'rack_id = 10 AND storage_level IS NULL'), 2, 'ที่ถูกปฏิเสธต้องไม่แตะยอดเดิม');
+});
+
+test('ย้ายของค้างในช่องไม่ระบุเลเวลไปเลเวลที่ถูกได้', () => {
+  const db = makeDb();
+  insertLegacyNoLevel(db, 10, 4);
+  moveQuantity(db, { itemId: 'HAMMER', from: { rackId: 10, storageLevel: null }, to: { rackId: 10, storageLevel: 2 }, quantity: 4 });
+  assert.equal(qtyAt(db, 'rack_id = 10 AND storage_level IS NULL'), 0);
+  assert.equal(qtyAt(db, 'rack_id = 10 AND storage_level = 2'), 4);
+  assert.equal(getItemLocations(db, 'HAMMER').locations.length, 1);
+});
+
+// ชั้นเลเวลเดียวเติมเลเวล 1 ให้เอง — ถ้าเติมก่อนดูว่ามีแถวค้างไหม คำสั่ง "เอาออก" จะไปลงที่เลเวล 1
+// แถวค้างไม่หาย แต่ระบบตอบว่าสำเร็จ
+test('ชั้นวางเลเวลเดียว: เอาของค้างในช่องไม่ระบุเลเวลออก ต้องไม่ไปแตะเลเวล 1', () => {
+  const db = makeDb();
+  insertLegacyNoLevel(db, 12, 2);
+  setLocationQuantity(db, { itemId: 'HAMMER', rackId: 12, storageLevel: 1, quantity: 3 });
+  setLocationQuantity(db, { itemId: 'HAMMER', rackId: 12, storageLevel: null, quantity: 0 });
+  assert.equal(qtyAt(db, 'rack_id = 12 AND storage_level IS NULL'), 0, 'แถวค้างต้องหายไป');
+  assert.equal(qtyAt(db, 'rack_id = 12 AND storage_level = 1'), 3, 'เลเวล 1 ต้องอยู่ครบ');
+
+  // วางใหม่โดยไม่ระบุเลเวล ยังเติมเลเวล 1 ให้เหมือนเดิม
+  setLocationQuantity(db, { itemId: 'HAMMER', rackId: 12, quantity: 1, mode: 'add' });
+  assert.equal(qtyAt(db, 'rack_id = 12 AND storage_level = 1'), 4);
+});
+
 test('ตรวจค่าที่ไม่ถูกต้อง', () => {
   const db = makeDb();
   assert.throws(() => setLocationQuantity(db, { itemId: 'NOPE', rackId: 10, quantity: 1 }), /ไม่พบสินค้า/);

@@ -36,6 +36,11 @@ export default function AdjustStockModal({ product, focus = null, onClose, onDon
     ? locations.find((loc) => Number(loc.rackId) === Number(focus.rackId) && Number(loc.storageLevel || 0) === Number(focus.level || 0)) || null
     : null), [focus, locations]);
 
+  // จุดไม่มีเลเวลบนชั้นที่แบ่งเลเวล = ของค้างจากก่อนมีกฎบังคับเลเวล เซิร์ฟเวอร์ไม่ให้เพิ่มของเข้าไปอีก
+  // ถ้ายังเสนอ "วางที่นี่" การปรับยอดทั้งรายการจะถูกปฏิเสธไปด้วย ของที่นับเกินจึงไปกองที่ "ยังไม่ระบุตำแหน่ง" แทน
+  const canPlaceHere = Boolean(focusLoc)
+    && !(focusLoc.rackId && focusLoc.storageLevel == null && !Number(focusLoc.isFloorZone));
+
   const counted = countedQty === '' ? null : Number(countedQty);
   const delta = counted == null ? 0 : counted - currentStock;
   const placed = locations.reduce((sum, loc) => sum + Number(loc.quantity), 0);
@@ -59,7 +64,7 @@ export default function AdjustStockModal({ product, focus = null, onClose, onDon
       const deductions = Object.entries(effectiveCuts)
         .map(([locationId, quantity]) => ({ locationId: Number(locationId), quantity: Number(quantity) || 0 }))
         .filter((entry) => entry.quantity > 0);
-      const placeAt = delta > 0 && focusLoc && placeHere ? focusLoc.id : null;
+      const placeAt = delta > 0 && canPlaceHere && placeHere ? focusLoc.id : null;
       const json = await fetchApi('/api/transactions/adjust', {
         method: 'POST',
         body: JSON.stringify({
@@ -122,7 +127,7 @@ export default function AdjustStockModal({ product, focus = null, onClose, onDon
           )}
 
           {/* นับเกิน + เปิดมาจากจุดบนผัง → ของที่เกินอยู่ตรงหน้าคนนับ วางที่นี่เลย (เอาติ๊กออกได้ถ้าเจอที่อื่น) */}
-          {delta > 0 && focusLoc && (
+          {delta > 0 && canPlaceHere && (
             <label className="flex cursor-pointer items-start gap-2 rounded-xl border border-success/40 bg-success/10 p-3 text-sm">
               <input type="checkbox" className="checkbox checkbox-sm checkbox-success mt-0.5" checked={placeHere} onChange={(event) => setPlaceHere(event.target.checked)} />
               <span>
