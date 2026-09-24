@@ -100,13 +100,19 @@ export const setLocationQuantity = (db, { itemId, rackId = null, storageLevel = 
   let existing;
 
   if (hasRack) {
-    const rack = db.prepare('SELECT id, name, levels FROM storage_racks WHERE id = ? AND deleted_at IS NULL').get(Number(rackId));
+    const rack = db.prepare('SELECT id, name, levels, COALESCE(is_floor, 0) AS isFloor FROM storage_racks WHERE id = ? AND deleted_at IS NULL').get(Number(rackId));
     if (!rack) throw new LocationError('ไม่พบชั้นวาง', 404);
     if (storageLevel != null && storageLevel !== '') {
       level = Number.parseInt(storageLevel, 10);
       if (!Number.isInteger(level) || level < 1 || level > rack.levels) {
         throw new LocationError(`เลเวลต้องอยู่ระหว่าง 1 ถึง ${rack.levels}`);
       }
+    } else if (!rack.isFloor) {
+      // ชั้นวางที่แบ่งเลเวลต้องระบุเลเวลเสมอ — แถวที่ไม่มีเลเวลจะกลายเป็นตำแหน่งลอยๆ
+      // ที่คนไปยืนหน้าชั้นแล้วไม่รู้ว่าของอยู่ชั้นไหน และนับเป็นคนละตำแหน่งกับของตัวเดียวกันที่ระบุเลเวลไว้
+      // ชั้นที่มีเลเวลเดียวไม่มีอะไรให้เลือก เติมให้เลย (พื้นที่วางพื้น/จัดเตรียมไม่มีเลเวลอยู่แล้ว จึงข้ามกฎนี้)
+      if (Number(rack.levels) === 1) level = 1;
+      else throw new LocationError(`กรุณาระบุเลเวลของชั้นวาง ${rack.name} (มี ${rack.levels} เลเวล)`);
     }
     existing = db.prepare(
       'SELECT id, quantity FROM item_locations WHERE item_id = ? AND rack_id = ? AND IFNULL(storage_level, -1) = IFNULL(?, -1)'
