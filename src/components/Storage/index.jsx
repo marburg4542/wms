@@ -672,6 +672,13 @@ function UnassignedModal({ onClose, onAssigned, focusSku = null }) {
       });
       if (result.success) {
         toast.success(result.message);
+        // บันทึกแล้วล้างช่องของแถวนี้ — ถ้าค้างไว้ ปิดหน้าต่างจะถูกถามว่า "ยังไม่ได้กดบันทึก" ทั้งที่บันทึกไปแล้ว
+        // คนหน้างานจะนึกว่าของไม่เข้า แล้วกดบันทึกซ้ำ ของจะถูกวางเพิ่มอีกรอบ
+        setDraft((current) => {
+          const next = { ...current };
+          delete next[item.sku];
+          return next;
+        });
         // วางไม่ครบก็ยังอยู่ในรายการ จึงโหลดใหม่แทนการตัดออกทันที
         await load(search.trim());
         onAssigned?.();
