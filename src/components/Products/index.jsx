@@ -691,6 +691,15 @@ export default function Products() {
                           className="text-primary hover:underline"
                         />
                       </>
+                    ) : item.isActive && Number(item.stock) > 0 ? (
+                      // ยังไม่มีที่วางแต่มีของอยู่ → ผังคลังจะเปิดรายการ "ยังไม่ระบุตำแหน่ง" ที่แถวของชิ้นนี้ให้วางต่อได้เลย
+                      // (คงเหลือ 0 / ปิดใช้งาน ไม่มีอะไรให้วาง จึงปล่อยเป็นข้อความเฉยๆ แบบเดิม)
+                      <>
+                        ตำแหน่ง:{' '}
+                        <Link to={`/storage?highlight=${encodeURIComponent(item.sku)}`} className="text-warning hover:underline">
+                          📍 ยังไม่ระบุ — กดเพื่อระบุ
+                        </Link>
+                      </>
                     ) : '📍 ตำแหน่ง: -'}
                   </span>
                 </div>

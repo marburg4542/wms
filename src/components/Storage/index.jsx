@@ -573,7 +573,9 @@ function PickListPanel({ data, pickedKeys, open, onToggleOpen, onTogglePicked, o
 }
 
 // สินค้าที่ยังไม่ได้กำหนดตำแหน่งจัดเก็บ — ค้นหาแล้วผูกเข้าชั้นวาง/เลเวลได้ทันที
-function UnassignedModal({ onClose, onAssigned }) {
+// focusSku = เปิดมาจากการกดสินค้าตัวนั้น (ค้นหาในผัง/หน้ารายการอะไหล่) → เลื่อนไปที่แถวนั้นให้เลย
+// ชื่อสินค้าที่ถูกตัดท้ายหลายแถวหน้าตาเหมือนกันทุกตัว ถ้าปล่อยให้ไล่หาเองจะวางผิดตัวได้ง่าย
+function UnassignedModal({ onClose, onAssigned, focusSku = null }) {
   const [search, setSearch] = useState('');
   const [items, setItems] = useState([]);
   const [total, setTotal] = useState(0);
@@ -581,7 +583,21 @@ function UnassignedModal({ onClose, onAssigned }) {
   const [loading, setLoading] = useState(true);
   const [draft, setDraft] = useState({});   // sku → { rackId, level }
   const [saving, setSaving] = useState('');
+  const listRef = useRef(null);
+  // เลื่อนไปหาแถวนั้นแค่ครั้งแรก — รายการโหลดใหม่ทุกครั้งที่บันทึก/พิมพ์ค้นหา ถ้าเลื่อนทุกรอบ จอจะดีดกลับมาที่เดิมตลอด
+  const scrolledToRef = useRef(null);
+  const searchedForRef = useRef(null);
+  // รูปใหญ่ — ชื่อที่ถูกตัดท้ายเหมือนกันหลายแถว ต้องเทียบของในมือกับรูปก่อนเลือกที่วาง ว่าเป็นตัวเดียวกันจริง
+  const [preview, setPreview] = useState(null);
   useBodyScrollLock(true);
+
+  // Esc ปิดแค่รูป — รายการข้างหลังยังเปิดค้างไว้ ที่เลือกชั้นวางไว้แต่ยังไม่กดบันทึกจะไม่หาย
+  useEffect(() => {
+    if (!preview) return undefined;
+    const onKey = (event) => { if (event.key === 'Escape') setPreview(null); };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [preview]);
 
   const load = useCallback(async (term) => {
     setLoading(true);
@@ -598,6 +614,25 @@ function UnassignedModal({ onClose, onAssigned }) {
     const timer = setTimeout(() => load(search.trim()), 300);
     return () => clearTimeout(timer);
   }, [search, load]);
+
+  useEffect(() => {
+    if (!focusSku || loading || scrolledToRef.current === focusSku) return;
+    const box = listRef.current;
+    const row = box?.querySelector(`[data-sku="${CSS.escape(focusSku)}"]`);
+    if (!row) {
+      // รายการเปิดมาแค่ 100 ตัวแรกตามชื่อ ของที่อยู่ท้ายๆ จะไม่ติดมาด้วย → ค้นด้วยรหัสแทน (ครั้งเดียว
+      // ถ้าผู้ใช้ลบคำค้นทิ้งเองทีหลัง ต้องไม่เติมกลับให้ ไม่งั้นจะดูรายการทั้งหมดไม่ได้อีกเลย)
+      if (searchedForRef.current !== focusSku) {
+        searchedForRef.current = focusSku;
+        setSearch(focusSku);
+      }
+      return;
+    }
+    scrolledToRef.current = focusSku;
+    // เลื่อนเฉพาะกรอบรายการของหน้าต่างนี้ ให้แถวมาอยู่กลางกรอบ — ไม่ไปขยับหน้าผังคลังที่อยู่ด้านหลัง
+    const offset = row.getBoundingClientRect().top - box.getBoundingClientRect().top;
+    box.scrollBy({ top: offset - (box.clientHeight - row.offsetHeight) / 2, behavior: 'smooth' });
+  }, [focusSku, items, loading]);
 
   // ช่องที่ยังไม่ได้กรอกของแถวนั้น — ใช้ทั้งปิดปุ่มบันทึกและบอกว่าขาดอะไร
   // ชั้นวางที่แบ่งเลเวลต้องระบุเลเวลเสมอ ไม่งั้นของจะไปอยู่เป็นตำแหน่งลอยๆ ที่หาไม่เจอหน้าชั้น
@@ -686,7 +721,7 @@ function UnassignedModal({ onClose, onAssigned }) {
           />
         </div>
 
-        <div className="max-h-[56vh] overflow-y-auto p-3">
+        <div ref={listRef} className="max-h-[56vh] overflow-y-auto p-3">
           {loading ? (
             <div className="py-10 text-center"><span className="loading loading-spinner text-primary" /></div>
           ) : items.length === 0 ? (
@@ -695,15 +730,30 @@ function UnassignedModal({ onClose, onAssigned }) {
             </p>
           ) : items.map((item) => {
             const rack = rackOf(item.sku);
+            const focused = item.sku === focusSku;
+            // สีเดียวกับ "ตำแหน่งที่ค้นหา" บนผังชั้นวาง — ของที่ค้นมาเด่นแบบเดียวกันทั้งระบบ
+            // แถวอื่นมีขอบใสไว้ ขนาดแถวจะเท่ากัน ไม่ขยับตอนแถวที่ค้นหามีขอบขึ้นมา
             return (
-              <div key={item.sku} className="mb-2 flex flex-wrap items-center gap-2 rounded-xl bg-base-200/50 p-2">
+              <div
+                key={item.sku}
+                data-sku={item.sku}
+                className={`mb-2 flex flex-wrap items-center gap-2 rounded-xl border p-2 ${focused ? 'border-warning bg-warning/10 ring-2 ring-warning/40' : 'border-transparent bg-base-200/50'}`}
+              >
                 <div className="avatar shrink-0">
                   <div className="h-10 w-10 rounded bg-base-300">
-                    <img src={itemImage(item.imageUrl)} crossOrigin="anonymous" alt={item.sku} loading="lazy" decoding="async" width="40" height="40" />
+                    <button type="button" onClick={() => setPreview(item)} disabled={!item.imageUrl}
+                      title={item.imageUrl ? 'กดเพื่อดูรูปใหญ่' : 'ไม่มีรูป'}
+                      className={`h-full w-full ${item.imageUrl ? 'cursor-zoom-in' : ''}`}>
+                      <img src={itemImage(item.imageUrl)} crossOrigin="anonymous" alt={item.sku} loading="lazy" decoding="async" width="40" height="40" />
+                    </button>
                   </div>
                 </div>
                 <div className="min-w-40 flex-1">
-                  <div className="truncate text-sm font-medium">{item.name}</div>
+                  <div className="truncate text-sm font-medium">
+                    {/* ป้ายคำกำกับด้วย ไม่พึ่งสีอย่างเดียว — ช่องเลือกชั้นวางทุกแถวก็เป็นกรอบสีส้มเหมือนกัน */}
+                    {focused && <span className="badge badge-warning badge-sm mr-1.5 align-middle">สินค้าที่ค้นหา</span>}
+                    {item.name}
+                  </div>
                   <div className="truncate text-xs text-base-content/60">
                     <span className="font-mono">{item.sku}</span> · {item.groupId} — {item.groupName || 'Default'}
                     {' · '}คงเหลือ {item.stock}
@@ -762,6 +812,31 @@ function UnassignedModal({ onClose, onAssigned }) {
           })}
         </div>
       </section>
+
+      {/* รูปใหญ่ — หน้าตาเดียวกับหน้าสินค้าคงคลัง/ผังชั้นวาง · แตะพื้นหลังปิดแค่รูป ต้อง stopPropagation
+          ไม่งั้นคลิกทะลุไปถึงพื้นหลังของหน้าต่างนี้ แล้วปิดรายการทิ้งไปด้วย */}
+      {preview && (
+        <div className="fixed inset-0 z-[110] flex items-center justify-center bg-black/80 p-4 backdrop-blur-sm"
+          onClick={(event) => { event.stopPropagation(); setPreview(null); }}>
+          <div className="relative w-full max-w-3xl" onClick={(event) => event.stopPropagation()}>
+            <button type="button" onClick={() => setPreview(null)}
+              className="btn btn-sm btn-circle absolute -top-3 -right-3 z-10" title="ปิด (Esc)">✕</button>
+            {/* crossOrigin ต้องตรงกับรูปเล็กในรายการ ไม่งั้นเบราว์เซอร์นับเป็นคนละแคชแล้วโหลดใหม่ทั้งก้อน */}
+            <img src={itemImage(preview.imageUrl)} crossOrigin="anonymous" alt={preview.sku} decoding="async"
+              className="w-full max-h-[75vh] object-contain rounded-2xl bg-base-100 shadow-2xl" />
+            <div className="mt-3 text-center text-white">
+              <p className="font-mono text-sm font-semibold">{preview.sku}</p>
+              <p className="text-sm opacity-90">{preview.name}</p>
+              {/* ตัวเลขที่ต้องใช้ตอนเลือกที่วาง คาสายตาไว้ ไม่ต้องปิดรูปกลับไปดูในแถว */}
+              <p className="mt-1 flex items-center justify-center gap-3 text-xs">
+                <span className="opacity-80">คงเหลือ <b className="text-sm">{preview.stock}</b></span>
+                {Number(preview.placed) > 0 && <span className="opacity-80">วางแล้ว <b className="text-sm">{preview.placed}</b></span>}
+                <span className="text-warning">ยังไม่ระบุที่ <b className="text-sm">{preview.unplaced ?? preview.stock}</b></span>
+              </p>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
@@ -789,6 +864,12 @@ export default function Storage() {
   const [pickPanelOpen, setPickPanelOpen] = useState(true);
   // สินค้าที่ยังไม่ระบุตำแหน่ง (Admin/Manager) — เติมตำแหน่งได้จากหน้านี้เลย
   const [unassignedOpen, setUnassignedOpen] = useState(false);
+  const [unassignedFocus, setUnassignedFocus] = useState(null);   // รหัสสินค้าที่ต้องพาไปหาในรายการ
+  // ส่งรหัสมา = พาไปที่แถวของชิ้นนั้น · ไม่ส่ง = เปิดรายการตั้งแต่ต้น (ปุ่มบนแถบ)
+  const openUnassigned = useCallback((sku = null) => {
+    setUnassignedFocus(sku);
+    setUnassignedOpen(true);
+  }, []);
   const [storageRooms, setStorageRooms] = useState([]);
   const [projects, setProjects] = useState([]);            // ใช้เลือกโครงการให้พื้นที่จัดเตรียม
 
@@ -1826,16 +1907,38 @@ export default function Storage() {
         }
         // จุดนั้นถูกย้าย/ลบไปแล้วระหว่างทาง — ตกกลับไปที่ตำแหน่งหลักแทนการขึ้น error เปล่าๆ
       }
-      const productResult = await fetchApi(`/api/products?search=${encodeURIComponent(sku)}&limit=1`).catch(() => ({}));
-      const product = productResult.success && productResult.products?.[0];
+      const productResult = await fetchApi(`/api/products?search=${encodeURIComponent(sku)}&limit=6`).catch(() => ({}));
+      const products = (productResult.success && productResult.products) || [];
+      // ค้นด้วยรหัสแล้วสินค้าที่ชื่อมีเลขชุดนั้นปนมาได้ (รายการเรียงตามชื่อ ไม่ใช่ตามความตรง) — เอาตัวที่รหัสตรงก่อน
+      const product = products.find((row) => String(row.sku) === sku) || products[0];
       if (!alive) return;
-      if (!product?.rackId && !product?.roomId) { toast('สินค้านี้ยังไม่ได้ระบุตำแหน่งจัดเก็บ', { icon: '📍' }); return; }
+      if (!product?.rackId && !product?.roomId) {
+        // ยังไม่มีที่วางเลย → คนที่จัดตำแหน่งได้ เปิดรายการ "ยังไม่ระบุตำแหน่ง" ที่แถวของชิ้นนี้ให้วางต่อได้ทันที
+        // (ของที่คงเหลือ 0 ไม่อยู่ในรายการนั้น เพราะไม่มีอะไรให้วาง)
+        if (canEdit && Number(product?.stock) > 0) {
+          openUnassigned(product.sku);
+          // ลบรหัสออกจากลิงก์ ไม่งั้นปิดหน้าต่างแล้วผังโหลดคลังใหม่เมื่อไหร่ หน้าต่างจะเด้งกลับขึ้นมาเอง
+          // และกดสินค้าตัวเดิมซ้ำจากช่องค้นหา ลิงก์ไม่เปลี่ยน หน้าต่างจะไม่เปิดให้อีก
+          const params = new URLSearchParams(searchParams);
+          params.delete('highlight');
+          params.delete('loc');
+          setSearchParams(params, { replace: true });
+          return;
+        }
+        toast(
+          canEdit && product
+            ? `${product.sku} ยังไม่ได้ระบุตำแหน่งจัดเก็บ — คงเหลือ ${Number(product.stock).toLocaleString()} จึงยังไม่มีของให้วาง`
+            : 'สินค้านี้ยังไม่ได้ระบุตำแหน่งจัดเก็บ',
+          { icon: '📍' }
+        );
+        return;
+      }
       const ok = await gotoLocation({ rackId: product.rackId, level: product.storageLevel || null, roomId: product.roomId, sku: product.sku });
       // ของที่วางในห้องของคลังอื่น: รายการสินค้าไม่ได้บอกว่าเป็นคลังไหน จึงหาในคลังที่เปิดอยู่ไม่เจอ
       if (!ok && alive) toast('เปิดตำแหน่งจัดเก็บไม่สำเร็จ — ลองเลือกจากรายการตำแหน่งของสินค้า', { icon: '📍' });
     })();
     return () => { alive = false; };
-  }, [searchParams, gotoLocation]);
+  }, [searchParams, setSearchParams, gotoLocation, canEdit, openUnassigned]);
 
   // โหลดเส้นทางหยิบของเมื่อเปิดด้วย ?pick=<เลขที่ใบเบิก> แล้วพาไปจุดแวะแรกให้เลย
   useEffect(() => {
@@ -1954,7 +2057,7 @@ export default function Storage() {
   // หารหัสที่พิมพ์/สแกนมาแล้วพาไปบนผัง — ใช้ทั้งปุ่ม "ค้นหา" (รวมเครื่องสแกนบนคอมที่ยิงรหัสแล้วกด Enter ให้เอง)
   // และกล้องมือถือ พฤติกรรมจึงเหมือนกันทุกทาง
   //   ตรงรหัสสินค้าที่วางหลายจุด → กางรายการจุดให้เลือก (ไม่เดาให้ว่าไปจุดหลัก)
-  //   ตรงรหัสสินค้าที่วางจุดเดียว/ยังไม่วาง → ไปเลย (ยังไม่วาง ผังจะเตือนเอง)
+  //   ตรงรหัสสินค้าที่วางจุดเดียว → ไปเลย · ยังไม่วางเลย → รายการยังไม่ระบุตำแหน่งที่แถวนั้น (คนอื่นเห็นป้ายเตือน)
   //   ไม่ตรงรหัสสินค้าตัวไหน (ชื่อห้อง/ชั้น/ค้นบางส่วน) → พฤติกรรมเดิม
   const locateCode = useCallback(async (raw, { fromScan = false } = {}) => {
     const { searchValue, fromLabel } = parseScannedCode(raw);
@@ -2289,7 +2392,7 @@ export default function Storage() {
             </form>
 
             {canEdit && (
-              <button className="btn btn-sm btn-outline" onClick={() => setUnassignedOpen(true)} title="สินค้าที่ยังไม่ได้กำหนดตำแหน่งจัดเก็บ"><FiPackage /> ยังไม่ระบุตำแหน่ง</button>
+              <button className="btn btn-sm btn-outline" onClick={() => openUnassigned()} title="สินค้าที่ยังไม่ได้กำหนดตำแหน่งจัดเก็บ"><FiPackage /> ยังไม่ระบุตำแหน่ง</button>
             )}
 
             {canEdit && !inRoom && (
@@ -2553,7 +2656,11 @@ export default function Storage() {
       )}
 
       {unassignedOpen && (
-        <UnassignedModal onClose={() => setUnassignedOpen(false)} onAssigned={reloadContext} />
+        <UnassignedModal
+          focusSku={unassignedFocus}
+          onClose={() => { setUnassignedOpen(false); setUnassignedFocus(null); }}
+          onAssigned={reloadContext}
+        />
       )}
 
       {scanOpen && (
