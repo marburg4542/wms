@@ -55,6 +55,36 @@ export const getPickList = (req, res) => {
   }
 };
 
+// ของที่วางไว้ในห้องโดยตรง (ไม่ได้อยู่บนชั้นวาง) — ห้องเล็กที่เก็บของชิ้นใหญ่ไม่ต้องสร้างชั้นให้ซ้ำซ้อน
+// คู่กับ getRack ของชั้นวาง แต่ห้องไม่มีเลเวล จึงเป็นรายการเดียวเรียงตามชื่อ
+export const getRoomItems = (req, res) => {
+  try {
+    const room = db.prepare(`
+      SELECT id, name, is_storage AS isStorage, is_staging AS isStaging, plan_id AS planId
+      FROM rooms WHERE id = ? AND deleted_at IS NULL
+    `).get(Number(req.params.id));
+    if (!room) return res.status(404).json({ success: false, message: 'ไม่พบห้อง' });
+
+    const items = db.prepare(`
+      SELECT l.id AS locationId, l.item_id AS sku, i.item_name AS name, l.quantity AS qtyHere,
+             i.group_id AS groupId, wb.group_name AS groupName,
+             COALESCE(ps.image_url, '') AS imageUrl,
+             COALESCE(wb.stock_balance, 0) AS stock
+      FROM item_locations l
+      JOIN items i ON i.item_id = l.item_id
+      LEFT JOIN warehouse_balance wb ON wb.item_id = l.item_id
+      LEFT JOIN product_settings ps ON ps.item_id = l.item_id
+      WHERE l.room_id = ?
+      ORDER BY i.item_name COLLATE NOCASE
+    `).all(room.id);
+
+    res.json({ success: true, room, items });
+  } catch (err) {
+    console.error('getRoomItems error:', err);
+    res.status(500).json({ success: false, message: 'Database error' });
+  }
+};
+
 // สินค้าที่ยัง "วางไม่ครบ" — มีของในคลังมากกว่าที่ระบุตำแหน่งไว้ (รวมพวกที่ยังไม่วางเลย)
 export const listUnassignedItems = (req, res) => {
   try {

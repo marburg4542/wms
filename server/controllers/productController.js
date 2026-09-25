@@ -221,6 +221,7 @@ export const createProduct = (req, res) => {
     const initialStock = toPositiveNumber(req.body.initialStock);
     const rackId = req.body.rackId ? Number(req.body.rackId) : null;         // ชั้นวางที่จัดเก็บ
     const storageLevel = req.body.storageLevel ? Number(req.body.storageLevel) : null; // เลเวลในชั้น
+    const roomId = !rackId && req.body.roomId ? Number(req.body.roomId) : null;         // หรือเก็บในห้องโดยตรง (ห้องเล็ก ของชิ้นใหญ่)
     const now = new Date().toISOString();
 
     if (!name) {
@@ -266,22 +267,25 @@ export const createProduct = (req, res) => {
       // เลือกชั้นวางมาตอนสร้าง = วางสต็อกตั้งต้น "ทั้งก้อน" ไว้ตรงนั้น
       // (ตอนสร้างยังไม่มีที่วางอื่น จำนวนจึงไม่กำกวม — ต่างจากตอนแก้ไขที่ของอาจกระจายหลายที่แล้ว)
       // เขียนผ่าน setLocationQuantity เพื่อให้ items.rack_id ถูก sync จาก item_locations ที่เดียว
-      if (rackId && initialStock > 0) {
+      // เลือกห้องแทนชั้นวางก็ได้ — ห้องเล็กที่เก็บของชิ้นใหญ่ไม่ต้องสร้างชั้นขึ้นมาให้ซ้ำซ้อน
+      if ((rackId || roomId) && initialStock > 0) {
         setLocationQuantity(db, {
-          itemId: sku, rackId, storageLevel, quantity: initialStock,
+          itemId: sku,
+          ...(rackId ? { rackId, storageLevel } : { roomId }),
+          quantity: initialStock,
           note: 'วางตอนสร้างสินค้า', createdBy: req.user?.username
         });
       }
       logAudit(req.user?.username, 'product.create', 'product', sku, {
-        name, minStock, initialStock: initialStock || 0, rackId: rackId || null, storageLevel: storageLevel || null
+        name, minStock, initialStock: initialStock || 0, rackId: rackId || null, storageLevel: storageLevel || null, roomId: roomId || null
       });
     })();
 
     broadcast('products');
     if (initialStock) broadcast('transactions');
     // เลือกชั้นไว้แต่ไม่ได้ใส่สต็อกตั้งต้น = ยังไม่มีของให้วาง ต้องบอกให้รู้ ไม่งั้นจะงงว่าทำไมผังคลังไม่ขึ้น
-    const placedNote = rackId && !initialStock
-      ? ' — ยังไม่ได้วางบนชั้น เพราะสต็อกตั้งต้นเป็น 0 (ไปวางได้ที่ผังคลังเมื่อรับของเข้าแล้ว)'
+    const placedNote = (rackId || roomId) && !initialStock
+      ? ' — ยังไม่ได้วางบนผังคลัง เพราะสต็อกตั้งต้นเป็น 0 (ไปวางได้ที่ผังคลังเมื่อรับของเข้าแล้ว)'
       : '';
     return res.status(201).json({ success: true, message: `สร้างสินค้าเรียบร้อย (SKU: ${sku})${placedNote}`, sku });
   } catch (error) {
@@ -550,15 +554,26 @@ export const permanentlyDeleteProduct = (req, res) => {
       return res.status(400).json({ success: false, message: 'ต้องปิดใช้งานสินค้าก่อน จึงจะลบถาวรได้' });
     }
 
+    // ตำแหน่งบนผังคลังต้องถูกถอนไปพร้อมกัน — item_locations อ้าง items ด้วย foreign key
+    // ถ้าไม่ลบก่อน ฐานข้อมูลจะปฏิเสธคำสั่งลบ แล้วเด้งเป็น "Database error" ที่ผู้ใช้อ่านไม่ออกว่าติดอะไร
+    // (ลบถาวร = ลบประวัติรับเข้า/เบิกออกทั้งหมดอยู่แล้ว ของบนผังจึงต้องหายตามไปด้วย)
+    const placed = db.prepare('SELECT COUNT(*) AS spots, COALESCE(SUM(quantity), 0) AS qty FROM item_locations WHERE item_id = ?').get(sku);
+
     db.transaction(() => {
+      db.prepare('DELETE FROM item_locations WHERE item_id = ?').run(sku);
       db.prepare('DELETE FROM stock_in WHERE item_id = ?').run(sku);
       db.prepare('DELETE FROM stock_out WHERE item_id = ?').run(sku);
       db.prepare('DELETE FROM items WHERE item_id = ?').run(sku);
-      logAudit(req.user?.username, 'product.permanent_delete', 'product', sku);
+      logAudit(req.user?.username, 'product.permanent_delete', 'product', sku, { locations: placed.spots, quantity: placed.qty });
     })();
 
     broadcast('products');
-    return res.json({ success: true, message: 'ลบสินค้าออกจากระบบถาวรแล้ว' });
+    return res.json({
+      success: true,
+      message: placed.spots > 0
+        ? `ลบสินค้าออกจากระบบถาวรแล้ว (ถอนออกจากผังคลัง ${placed.spots} จุด รวม ${placed.qty} ชิ้น)`
+        : 'ลบสินค้าออกจากระบบถาวรแล้ว'
+    });
   } catch (error) {
     console.error('permanentlyDeleteProduct Error:', error);
     res.status(500).json({ success: false, message: 'Database error' });

@@ -2,7 +2,7 @@
 // แยกออกมาเป็นตัวเดียว เพราะกติกาหักของออกจากชั้นต้องเหมือนกันทุกทางเข้า
 // ถ้าเขียนสองชุด วันหนึ่งจะแก้ชุดเดียวแล้วสองหน้าปรับยอดได้ผลไม่เท่ากัน
 //
-// focus = { rackId, level } เมื่อเปิดจากจุดบนผังคลัง (คนยืนนับอยู่หน้าชั้นนั้น)
+// focus = { rackId, level } หรือ { roomId } เมื่อเปิดจากจุดบนผังคลัง (คนยืนนับอยู่หน้าชั้น/ในห้องนั้น)
 //   นับได้น้อยลง → เติมให้ก่อนว่าหายจากจุดนี้ (แก้ได้ถ้าหายจากที่อื่นด้วย)
 //   นับได้มากขึ้น → เสนอวางของที่เกินไว้ที่จุดนี้เลย แทนการไปกองที่ "ยังไม่ระบุตำแหน่ง"
 import React, { useEffect, useMemo, useState } from 'react';
@@ -32,9 +32,12 @@ export default function AdjustStockModal({ product, focus = null, onClose, onDon
   }, [product.sku]);
 
   // ข้อมูลชั้นวางไม่ได้ส่งเลขตำแหน่งมา จึงจับคู่จากชั้นวาง+เลเวลแทน
-  const focusLoc = useMemo(() => (focus
-    ? locations.find((loc) => Number(loc.rackId) === Number(focus.rackId) && Number(loc.storageLevel || 0) === Number(focus.level || 0)) || null
-    : null), [focus, locations]);
+  // ของที่วางในห้องโดยตรงไม่มีชั้นวางให้เทียบ (rackId เป็น null) จึงจับคู่ด้วยเลขห้องแทน
+  const focusLoc = useMemo(() => {
+    if (!focus) return null;
+    if (focus.roomId) return locations.find((loc) => !loc.rackId && Number(loc.roomId) === Number(focus.roomId)) || null;
+    return locations.find((loc) => Number(loc.rackId) === Number(focus.rackId) && Number(loc.storageLevel || 0) === Number(focus.level || 0)) || null;
+  }, [focus, locations]);
 
   // จุดไม่มีเลเวลบนชั้นที่แบ่งเลเวล = ของค้างจากก่อนมีกฎบังคับเลเวล เซิร์ฟเวอร์ไม่ให้เพิ่มของเข้าไปอีก
   // ถ้ายังเสนอ "วางที่นี่" การปรับยอดทั้งรายการจะถูกปฏิเสธไปด้วย ของที่นับเกินจึงไปกองที่ "ยังไม่ระบุตำแหน่ง" แทน
