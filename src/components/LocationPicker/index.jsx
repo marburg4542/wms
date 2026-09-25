@@ -4,6 +4,8 @@
 // ของที่กระจายอยู่หลายชั้นวางจึงเปิดดูจุดอื่นจากหน้ารายการไม่ได้เลย
 //
 // วางอยู่จุดเดียว → กดแล้วไปทันที ไม่ต้องเสียคลิกเปิดเมนูที่มีตัวเลือกเดียว
+// ยกเว้นยังมีของที่ไม่มีที่วางเหลืออยู่ → เปิดเมนูก่อน ไม่งั้นของที่เหลือไม่โผล่ให้เห็นที่ไหนเลย
+// บรรทัด "ยังไม่ระบุตำแหน่ง N ชิ้น" ในเมนู กดแล้วไปเปิดรายการยังไม่ระบุตำแหน่งที่แถวของชิ้นนั้น (Admin/Manager)
 //
 // เมนูวาดลงที่ document.body (portal) แล้ววางตำแหน่งเองแบบ fixed — ไม่ได้ซ้อนอยู่ในตาราง/การ์ด
 // เพราะกรอบตารางหน้าสินค้าคงคลังเลื่อนซ้าย-ขวาได้ (overflow-x-auto) ซึ่งบังคับให้ตัดของที่ล้นลงล่างไปด้วย
@@ -14,6 +16,10 @@ import { createPortal } from 'react-dom';
 import { useNavigate } from 'react-router-dom';
 import toast from 'react-hot-toast';
 import { fetchApi } from '../../utils/api';
+import { needsLocationMenu } from '../../utils/labels';
+
+// หน้าต่างระบุตำแหน่งเปิดได้เฉพาะคนที่จัดตำแหน่งได้ (เซิร์ฟเวอร์ล็อกไว้อีกชั้น) — คนอื่นเห็นเป็นข้อความเฉยๆ
+const canPlaceItems = () => ['Admin', 'Manager'].includes(JSON.parse(sessionStorage.getItem('currentUser') || '{}').role);
 
 // ผลครั้งก่อนของแต่ละ SKU — ไว้โชว์ทันทีตอนเปิดเมนูซ้ำ ระหว่างรอผลใหม่ (ไม่ใช่ตัวตัดสินว่าจะถามใหม่ไหม)
 const locationCache = new Map();
@@ -26,7 +32,7 @@ export const locationRowLabel = (loc) => (
 const MENU_GAP = 4;      // ระยะห่างจากปุ่ม 📍
 const SCREEN_MARGIN = 8; // ไม่ให้เมนูชิดขอบจอจนอ่านไม่ออก
 
-export default function LocationPicker({ sku, locationCount = 0, label = '', variant = 'icon', className = '' }) {
+export default function LocationPicker({ sku, locationCount = 0, unplaced = 0, label = '', variant = 'icon', className = '' }) {
   const navigate = useNavigate();
   const [open, setOpen] = useState(false);
   const [data, setData] = useState(() => locationCache.get(sku) || null);
@@ -89,8 +95,14 @@ export default function LocationPicker({ sku, locationCount = 0, label = '', var
     navigate(`/storage?highlight=${encodeURIComponent(sku)}${locationId ? `&loc=${locationId}` : ''}`);
   };
 
+  // ไปทาง highlight ไม่ได้ — ของที่มีที่วางแล้วจะถูกพาไปชั้นวางแทนรายการยังไม่ระบุตำแหน่ง
+  const goToUnplaced = () => {
+    setOpen(false);
+    navigate(`/storage?unplaced=${encodeURIComponent(sku)}`);
+  };
+
   const handleClick = async () => {
-    if (locationCount <= 1) return goTo();     // จุดเดียว (หรือไม่รู้จำนวน) → พฤติกรรมเดิม
+    if (!needsLocationMenu({ locationCount, unplaced })) return goTo();   // วางครบจุดเดียว (หรือไม่รู้จำนวน) → พฤติกรรมเดิม
     if (open) return setOpen(false);
     setOpen(true);
     // ถามใหม่ทุกครั้งที่เปิด — แคชเดิมอยู่ตลอดการใช้งาน (สลับหน้าในแอปไม่ล้าง) ถ้าเชื่อแคช
@@ -123,7 +135,9 @@ export default function LocationPicker({ sku, locationCount = 0, label = '', var
         type="button"
         onClick={handleClick}
         className={className || (variant === 'icon' ? 'ml-1 align-middle' : 'text-[10px] text-primary')}
-        title={label ? `ตำแหน่ง: ${label}${locationCount > 1 ? ` (วางอยู่ ${locationCount} จุด)` : ''}` : 'ดูตำแหน่งจัดเก็บ'}
+        title={label
+          ? `ตำแหน่ง: ${label}${locationCount > 1 ? ` (วางอยู่ ${locationCount} จุด)` : ''}${Number(unplaced) > 0 ? ` · ยังไม่ระบุตำแหน่งอีก ${Number(unplaced).toLocaleString()} ชิ้น` : ''}`
+          : 'ดูตำแหน่งจัดเก็บ'}
         aria-label={`ตำแหน่งจัดเก็บของ ${sku}`}
       >
         📍{variant === 'text' && label ? ` ${label}` : ''}
@@ -152,9 +166,17 @@ export default function LocationPicker({ sku, locationCount = 0, label = '', var
               <span className="shrink-0 font-semibold">{Number(loc.quantity).toLocaleString()}</span>
             </button>
           ))}
-          {Number(data?.unplaced) > 0 && (
+          {Number(data?.unplaced) > 0 && (canPlaceItems() ? (
+            <button
+              type="button"
+              onClick={goToUnplaced}
+              className="w-full rounded-lg px-2 py-1.5 text-left text-[11px] text-warning hover:bg-base-200"
+            >
+              ยังไม่ระบุตำแหน่ง {Number(data.unplaced).toLocaleString()} ชิ้น — กดเพื่อระบุ
+            </button>
+          ) : (
             <p className="px-2 pt-1 text-[11px] text-warning">ยังไม่ระบุตำแหน่ง {Number(data.unplaced).toLocaleString()} ชิ้น</p>
-          )}
+          ))}
         </div>,
         document.body
       )}

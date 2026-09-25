@@ -686,6 +686,7 @@ export default function Products() {
                         <LocationPicker
                           sku={item.sku}
                           locationCount={item.locationCount}
+                          unplaced={item.unplaced}
                           label={locationLabel(item)}
                           variant="text"
                           className="text-primary hover:underline"

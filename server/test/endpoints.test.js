@@ -497,6 +497,16 @@ test('รายการสินค้า: บอกจำนวนจุดท
   assert.ok(untouched, 'สินค้าที่ยังไม่ได้ผูกตำแหน่งต้องเป็น 0 ไม่ใช่ null');
 });
 
+// ---- ของที่ยังไม่มีที่วาง (วางจุดเดียวแต่ยังเหลือ → หน้าเว็บให้เลือกก่อนว่าจะไปดูชั้นวาง หรือไประบุส่วนที่เหลือ) ----
+test('รายการสินค้า: บอกจำนวนที่ยังไม่มีที่วาง ตรงกับคงเหลือลบยอดที่วางไว้ และไม่ติดลบ', async () => {
+  const list = await callOk('getProducts', products.getProducts, { query: { limit: '500' } });
+  const placedOf = db.prepare('SELECT COALESCE(SUM(quantity), 0) AS n FROM item_locations WHERE item_id = ?');
+  for (const item of list.products) {
+    const placed = placedOf.get(item.sku).n;
+    assert.equal(item.unplaced, Math.max(Number(item.stock) - placed, 0), `${item.sku}: คงเหลือ ${item.stock} วางแล้ว ${placed}`);
+  }
+});
+
 // ---- เลือกผู้รับแจ้งเตือนตามบทบาท ----
 test('แจ้งเตือนตามบทบาท: ส่งเฉพาะบัญชีที่ใช้งานอยู่ และไม่ส่งกลับหาคนที่เป็นต้นเหตุ', async () => {
   const add = db.prepare("INSERT INTO app_users (username, email, password, role, status) VALUES (?, ?, 'x', ?, ?)");

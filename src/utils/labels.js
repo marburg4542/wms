@@ -47,6 +47,16 @@ export const locationLabel = (item) => {
   return item?.roomName || null;
 };
 
+// กดไปผังคลังแล้วต้องกางรายการตำแหน่งให้เลือกก่อนไหม
+//   วางหลายจุด                → ต้องเลือกว่าจะดูจุดไหน
+//   วางจุดเดียวแต่ยังเหลือของ  → ต้องเลือกว่าจะไปดูชั้นวาง หรือไประบุตำแหน่งส่วนที่เหลือ
+//   วางครบจุดเดียว / ยังไม่วาง → ไปเลย ไม่ต้องเสียคลิกเปิดรายการที่มีตัวเลือกเดียว
+// ใช้ร่วมกันทั้งช่องค้นหาในผังคลังและปุ่ม 📍 หน้าอื่น ให้กดที่ไหนก็ได้ผลเหมือนกัน
+export const needsLocationMenu = ({ locationCount, unplaced } = {}) => {
+  const spots = Number(locationCount || 0);
+  return spots > 1 || (spots === 1 && Number(unplaced || 0) > 0);
+};
+
 export const userStatusLabel = (status) => ({
   Active: 'ใช้งานอยู่',
   Pending: 'รออนุมัติ',

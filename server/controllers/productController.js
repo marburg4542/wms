@@ -43,6 +43,7 @@ const mapProduct = (row) => {
     roomId: row.primaryRoomId ?? null,             // ของที่วางในห้อง/โซนโดยตรง (ไม่ได้อยู่บนชั้นวาง)
     roomName: row.roomName || null,
     locationCount: Number(row.locationCount ?? 0),  // วางอยู่กี่จุด — มากกว่า 1 หน้าเว็บจะให้เลือกก่อนพาไป
+    unplaced: Number(row.unplaced ?? 0),            // ยังไม่มีที่วาง — ไม่รู้ = 0 คือพาไปตำแหน่งหลักแบบเดิม ไม่เด้งเมนูมั่ว
     status: stock > minStock ? 'Active' : (stock > 0 ? 'Low Stock' : 'Out of Stock')
   };
 };
@@ -161,6 +162,9 @@ export const getProducts = (req, res) => {
         rm.name AS roomName,
         -- จำนวนจุดที่มีของวางอยู่จริง — หน้ารายการใช้ตัดสินว่าต้องให้เลือกตำแหน่งก่อนพาไปผังคลังไหม
         (SELECT COUNT(*) FROM item_locations il WHERE il.item_id = i.item_id AND il.quantity > 0) AS locationCount,
+        -- ของที่ยังไม่มีที่วาง — วางจุดเดียวแต่ยังเหลือ หน้ารายการต้องให้เลือกก่อนว่าจะไปดูชั้นวาง หรือไประบุส่วนที่เหลือ
+        -- (ไม่ติดลบ: ข้อมูลเก่าที่วางเกินยอดยังมีได้ ดูเพดานใน itemLocations.js)
+        MAX(COALESCE(wb.stock_balance, 0) - (SELECT COALESCE(SUM(il.quantity), 0) FROM item_locations il WHERE il.item_id = i.item_id), 0) AS unplaced,
         wb.warning
       FROM items i
       LEFT JOIN warehouse_balance wb ON i.item_id = wb.item_id

@@ -45,6 +45,7 @@ import { useBodyScrollLock } from '../../utils/useBodyScrollLock';
 import { confirmDialog } from '../../utils/confirm';
 import RackBlueprint from './RackBlueprint';
 import { locationRowLabel } from '../LocationPicker';
+import { needsLocationMenu } from '../../utils/labels';
 import BarcodeScanner from '../BarcodeScanner';
 import { isCameraScanDevice } from '../../utils/device';
 import { parseScannedCode } from '../../utils/qr';
@@ -1940,6 +1941,20 @@ export default function Storage() {
     return () => { alive = false; };
   }, [searchParams, setSearchParams, gotoLocation, canEdit, openUnassigned]);
 
+  // ?unplaced=<sku> — มาจากบรรทัด "ยังไม่ระบุตำแหน่ง N ชิ้น" ในเมนู 📍 หน้าอื่น
+  // ของตัวนั้นมีที่วางแล้วบางส่วน ถ้าส่งมาทาง highlight จะถูกพาไปชั้นวาง ไม่ถึงรายการยังไม่ระบุตำแหน่ง
+  useEffect(() => {
+    const sku = searchParams.get('unplaced');
+    if (!sku) return;
+    // ลิงก์ถูกส่งต่อให้คนที่จัดตำแหน่งไม่ได้ก็ยังบอกว่าทำไมไม่มีอะไรเปิดขึ้นมา
+    if (canEdit) openUnassigned(sku);
+    else toast('การระบุตำแหน่งจัดเก็บทำได้เฉพาะ Admin และ Manager', { icon: '📍' });
+    // ลบออกจากลิงก์ทันที เหตุผลเดียวกับ highlight — ปิดแล้วต้องไม่เด้งกลับ และกดซ้ำต้องเปิดให้อีก
+    const params = new URLSearchParams(searchParams);
+    params.delete('unplaced');
+    setSearchParams(params, { replace: true });
+  }, [searchParams, setSearchParams, canEdit, openUnassigned]);
+
   // โหลดเส้นทางหยิบของเมื่อเปิดด้วย ?pick=<เลขที่ใบเบิก> แล้วพาไปจุดแวะแรกให้เลย
   useEffect(() => {
     const txId = searchParams.get('pick');
@@ -2056,8 +2071,8 @@ export default function Storage() {
 
   // หารหัสที่พิมพ์/สแกนมาแล้วพาไปบนผัง — ใช้ทั้งปุ่ม "ค้นหา" (รวมเครื่องสแกนบนคอมที่ยิงรหัสแล้วกด Enter ให้เอง)
   // และกล้องมือถือ พฤติกรรมจึงเหมือนกันทุกทาง
-  //   ตรงรหัสสินค้าที่วางหลายจุด → กางรายการจุดให้เลือก (ไม่เดาให้ว่าไปจุดหลัก)
-  //   ตรงรหัสสินค้าที่วางจุดเดียว → ไปเลย · ยังไม่วางเลย → รายการยังไม่ระบุตำแหน่งที่แถวนั้น (คนอื่นเห็นป้ายเตือน)
+  //   ตรงรหัสสินค้าที่วางหลายจุด หรือวางจุดเดียวแต่ยังเหลือ → กางรายการจุดให้เลือก (ไม่เดาให้ว่าไปจุดหลัก)
+  //   ตรงรหัสสินค้าที่วางครบจุดเดียว → ไปเลย · ยังไม่วางเลย → รายการยังไม่ระบุตำแหน่งที่แถวนั้น (คนอื่นเห็นป้ายเตือน)
   //   ไม่ตรงรหัสสินค้าตัวไหน (ชื่อห้อง/ชั้น/ค้นบางส่วน) → พฤติกรรมเดิม
   const locateCode = useCallback(async (raw, { fromScan = false } = {}) => {
     const { searchValue, fromLabel } = parseScannedCode(raw);
@@ -2067,10 +2082,14 @@ export default function Storage() {
     const result = await fetchApi(`/api/products?search=${encodeURIComponent(searchValue)}&limit=6`).catch(() => ({}));
     const product = (result.products || []).find((row) => String(row.sku) === searchValue);
     const scanned = fromLabel ? `สแกนป้าย: รหัสสินค้า ${searchValue}` : `สแกนได้: ${searchValue}`;
-    if (product && Number(product.locationCount) > 1) {
+    if (product && needsLocationMenu(product)) {
       setSearchOpen(true);
       loadSearchLocations(product.sku);
-      if (fromScan) toast.success(`${scanned} — วางอยู่ ${product.locationCount} จุด เลือกจุดที่จะดู`);
+      if (fromScan) {
+        toast.success(Number(product.locationCount) > 1
+          ? `${scanned} — วางอยู่ ${product.locationCount} จุด เลือกจุดที่จะดู`
+          : `${scanned} — ยังไม่ระบุตำแหน่งอีก ${Number(product.unplaced).toLocaleString()} ชิ้น เลือกว่าจะไปที่ไหน`);
+      }
       return;
     }
     if (fromScan && !product) {
@@ -2350,7 +2369,7 @@ export default function Storage() {
                         <button
                           type="button"
                           className={`flex w-full items-center justify-between rounded-lg px-3 py-2 text-left hover:bg-base-200 ${expanded ? 'bg-base-200' : ''}`}
-                          onClick={() => (spots > 1 ? toggleSearchLocations(sku) : chooseSearchResult(result))}
+                          onClick={() => (needsLocationMenu(result.product) ? toggleSearchLocations(sku) : chooseSearchResult(result))}
                         >
                           {/* ชื่อเต็มสู้ที่กับรหัสไม่ได้ — ให้รหัส/ชื่อห้องกันที่ไว้ก่อน (ไม่เกินครึ่งกว่าๆ) ชื่อสินค้าค่อยย่อ */}
                           <span className="max-w-[55%] shrink-0 truncate text-sm font-semibold">{result.label}</span>
@@ -2379,9 +2398,19 @@ export default function Storage() {
                                 <span className="shrink-0 font-semibold">{Number(loc.quantity).toLocaleString()}</span>
                               </button>
                             ))}
-                            {searchExpand.unplaced > 0 && (
+                            {/* ของที่วางไปแล้วบางส่วน — กดแล้วไปวางส่วนที่เหลือต่อได้เลย ไม่ต้องเปิดรายการแล้วไล่หาเอง
+                                (คนที่จัดตำแหน่งไม่ได้ เปิดรายการนั้นไม่ได้อยู่แล้ว จึงเป็นแค่ข้อความเหมือนเดิม) */}
+                            {searchExpand.unplaced > 0 && (canEdit ? (
+                              <button
+                                type="button"
+                                className="w-full rounded-lg px-2 py-1.5 text-left text-[11px] text-warning hover:bg-base-200"
+                                onClick={() => { setSearchOpen(false); setSearchExpand(null); openUnassigned(sku); }}
+                              >
+                                ยังไม่ระบุตำแหน่ง {searchExpand.unplaced.toLocaleString()} ชิ้น — กดเพื่อระบุ
+                              </button>
+                            ) : (
                               <p className="px-2 pb-1 text-[11px] text-warning">ยังไม่ระบุตำแหน่ง {searchExpand.unplaced.toLocaleString()} ชิ้น</p>
-                            )}
+                            ))}
                           </div>
                         )}
                       </div>
