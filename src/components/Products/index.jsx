@@ -51,7 +51,8 @@ const emptyProductForm = {
   imageUrl: '',
   initialStock: '',
   rackId: '',
-  storageLevel: ''
+  storageLevel: '',
+  roomId: ''        // วางในห้องโดยตรง — ห้องเล็กที่เก็บของชิ้นใหญ่ไม่ต้องสร้างชั้นวางขึ้นมาซ้อน
 };
 
 const imageFallback = "data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSIxNjAiIGhlaWdodD0iMTIwIj48cmVjdCB3aWR0aD0iMTYwIiBoZWlnaHQ9IjEyMCIgZmlsbD0iI2YzZjRmNiIvPjx0ZXh0IHg9IjUwJSIgeT0iNTAlIiBmb250LXNpemU9IjE0IiB0ZXh0LWFuY2hvcj0ibWlkZGxlIiBhbGlnbm1lbnQtYmFzZWxpbmU9Im1pZGRsZSIgZm9udC1mYW1pbHk9InNhbnMtc2VyaWYiIGZpbGw9IiM5YjliOWIiPk5vIEltYWdlPC90ZXh0Pjwvc3ZnPg==";
@@ -68,6 +69,7 @@ export default function Products() {
   const [searchTerm, setSearchTerm] = useState('');
   const [groups, setGroups] = useState([]);
   const [racks, setRacks] = useState([]);
+  const [rooms, setRooms] = useState([]);
   const [groupFilter, setGroupFilter] = useState('');
   // มุมมอง "ที่ปิดใช้งาน" — แสดงเฉพาะสินค้าที่ถูก archive ไว้ สำหรับคืนสถานะหรือลบถาวร
   const [showInactive, setShowInactive] = useState(false);
@@ -164,6 +166,9 @@ export default function Products() {
     fetchApi('/api/racks')
       .then(json => { if (json.success) setRacks(json.racks); })
       .catch(() => {});
+    fetchApi('/api/rooms')
+      .then(json => { if (json.success) setRooms(json.rooms.filter((room) => room.isStorage || room.isStaging)); })
+      .catch(() => {});
   }, []);
 
   // debounce กันยิง request ทุกตัวอักษรที่พิมพ์ค้นหา
@@ -225,7 +230,8 @@ export default function Products() {
         imageUrl: product.imageUrl || '',
         initialStock: '',
         rackId: product.rackId ? String(product.rackId) : '',
-        storageLevel: product.storageLevel ? String(product.storageLevel) : ''
+        storageLevel: product.storageLevel ? String(product.storageLevel) : '',
+        roomId: ''
       });
       setImagePreview(product.imageUrl ? getAssetUrl(product.imageUrl) : '');
       // ตำแหน่งจัดเก็บแก้จากฟอร์มนี้ไม่ได้แล้ว ดึงของจริงจากผังคลังมาแสดงให้ดูเฉยๆ
@@ -434,9 +440,18 @@ export default function Products() {
   };
 
   const permanentDeleteProduct = async (product) => {
+    // ถามตำแหน่งบนผังคลังก่อน เพื่อบอกในคำยืนยันว่าจะถอนของออกจากผังกี่จุด กี่ชิ้น
+    // (ลบถาวรจะลบตำแหน่งไปด้วย ไม่งั้นฐานข้อมูลปฏิเสธคำสั่งลบเพราะตำแหน่งอ้างถึงสินค้าตัวนี้อยู่)
+    const locationInfo = await fetchApi(`/api/storage-map/locations/${encodeURIComponent(product.sku)}`).catch(() => null);
+    const spots = locationInfo?.success ? (locationInfo.locations || []) : [];
+    const spotQty = spots.reduce((sum, loc) => sum + Number(loc.quantity || 0), 0);
     const ok = await confirmDialog({
       title: 'ลบสินค้าถาวร',
-      message: `ลบ "${product.sku} — ${product.name}" ออกจากระบบถาวร?\nประวัติรับเข้า/เบิกออกทั้งหมดจะถูกลบด้วย และกู้คืนไม่ได้`,
+      message: `ลบ "${product.sku} — ${product.name}" ออกจากระบบถาวร?\nประวัติรับเข้า/เบิกออกทั้งหมดจะถูกลบด้วย และกู้คืนไม่ได้`
+        + (spots.length > 0
+          ? `\n\nสินค้านี้ยังผูกตำแหน่งจัดเก็บอยู่ ${spots.length} จุด (รวม ${spotQty} ชิ้น) — จะถูกถอนออกจากผังคลังไปด้วย:\n`
+            + spots.map((loc) => `• ${[loc.areaName, loc.rackName, loc.storageLevel ? `เลเวล ${loc.storageLevel}` : null].filter(Boolean).join(' · ')} — ${Number(loc.quantity)} ชิ้น`).join('\n')
+          : ''),
       confirmText: 'ลบถาวร',
       danger: true
     });
@@ -444,7 +459,7 @@ export default function Products() {
     try {
       const json = await fetchApi(`/api/products/${encodeURIComponent(product.sku)}/permanent`, { method: 'DELETE' });
       if (json.success) {
-        toast.success('ลบสินค้าออกจากระบบถาวรแล้ว');
+        toast.success(json.message || 'ลบสินค้าออกจากระบบถาวรแล้ว');
         await fetchProducts();
       }
     } catch (err) {
@@ -799,16 +814,34 @@ export default function Products() {
                 {!editingSku ? (
                   <>
                     <label className="form-control">
-                      <span className="label-text text-xs font-bold">ชั้นวาง (ตำแหน่งจัดเก็บ)</span>
-                      <select className="select select-bordered" value={productForm.rackId}
+                      <span className="label-text text-xs font-bold">ที่เก็บ (ตำแหน่งจัดเก็บ)</span>
+                      <select className="select select-bordered"
+                        value={productForm.rackId ? `rack:${productForm.rackId}` : productForm.roomId ? `room:${productForm.roomId}` : ''}
                         onChange={(e) => {
+                          // ชั้นวางกับห้องเลือกได้อย่างใดอย่างหนึ่ง — เซิร์ฟเวอร์ก็ยึดกฎเดียวกัน
+                          const [kind, id] = String(e.target.value).split(':');
+                          if (kind === 'room') return setProductForm({ ...productForm, rackId: '', storageLevel: '', roomId: id });
                           // ชั้นที่มีเลเวลเดียวเติมให้เลย ไม่มีอะไรให้เลือก
-                          const picked = racks.find((r) => String(r.id) === String(e.target.value));
+                          const picked = racks.find((r) => String(r.id) === String(id));
                           const autoLevel = picked && !picked.isFloor && Number(picked.levels) === 1 ? '1' : '';
-                          setProductForm({ ...productForm, rackId: e.target.value, storageLevel: autoLevel });
+                          setProductForm({ ...productForm, rackId: id || '', storageLevel: autoLevel, roomId: '' });
                         }}>
                         <option value="">— ไม่ระบุ —</option>
-                        {racks.map(r => <option key={r.id} value={r.id}>{r.roomName ? `${r.roomName} / ${r.name}` : `${r.planName || 'ผัง'} · ${r.name}`}</option>)}
+                        <optgroup label="ชั้นวาง / พื้นที่วางพื้น">
+                          {racks.map(r => (
+                            <option key={`rack:${r.id}`} value={`rack:${r.id}`}>
+                              {r.roomName ? `${r.roomName} / ${r.name}` : `${r.planName || 'ผัง'} · ${r.name}`}
+                            </option>
+                          ))}
+                        </optgroup>
+                        {/* วางในห้องได้เลย — ห้องเล็กที่เก็บของชิ้นใหญ่ไม่ต้องสร้างชั้นวางหรือพื้นที่วางพื้นให้ซ้ำซ้อน */}
+                        <optgroup label="ในห้องโดยตรง (ไม่ต้องมีชั้นวาง)">
+                          {rooms.map(room => (
+                            <option key={`room:${room.id}`} value={`room:${room.id}`}>
+                              {room.isStaging ? '📦 ' : '🏠 '}{room.name}
+                            </option>
+                          ))}
+                        </optgroup>
                       </select>
                     </label>
                     <label className="form-control">
@@ -817,13 +850,13 @@ export default function Products() {
                         value={productForm.storageLevel}
                         disabled={!productForm.rackId || racks.find((r) => String(r.id) === String(productForm.rackId))?.isFloor}
                         onChange={(e) => setProductForm({ ...productForm, storageLevel: e.target.value })}>
-                        <option value="">{racks.find((r) => String(r.id) === String(productForm.rackId))?.isFloor ? 'วางกับพื้น' : '— เลือกเลเวล —'}</option>
+                        <option value="">{productForm.roomId ? 'ห้องไม่มีเลเวล' : racks.find((r) => String(r.id) === String(productForm.rackId))?.isFloor ? 'วางกับพื้น' : '— เลือกเลเวล —'}</option>
                         {Array.from({ length: racks.find(r => String(r.id) === String(productForm.rackId))?.levels || 0 }, (_, i) => (
                           <option key={i + 1} value={i + 1}>เลเวล {i + 1}</option>
                         ))}
                       </select>
                     </label>
-                    {productForm.rackId && (
+                    {(productForm.rackId || productForm.roomId) && (
                       <p className="sm:col-span-2 -mt-1 text-[11px] text-base-content/60">
                         📦 ระบบจะวางสต็อกตั้งต้นทั้งหมดไว้ที่ตำแหน่งนี้ให้เลย (ถ้าสต็อกตั้งต้นเป็น 0 จะยังไม่วาง)
                       </p>

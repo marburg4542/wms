@@ -44,6 +44,7 @@ import { onServerEvent } from '../../utils/events';
 import { useBodyScrollLock } from '../../utils/useBodyScrollLock';
 import { confirmDialog } from '../../utils/confirm';
 import RackBlueprint from './RackBlueprint';
+import RoomItems from './RoomItems';
 import { locationRowLabel } from '../LocationPicker';
 import BarcodeScanner from '../BarcodeScanner';
 import { isCameraScanDevice } from '../../utils/device';
@@ -177,8 +178,14 @@ const CanvasEntity = React.memo(function CanvasEntity({ entity, displayZ, select
             <FiHome className="shrink-0" />
             <span className="truncate text-sm font-bold">{entity.name}</span>
           </div>
-          <div className="flex flex-1 flex-col items-center justify-center text-xs text-base-content/45">
+          <div className="flex flex-1 flex-col items-center justify-center gap-0.5 text-xs text-base-content/45">
             {entity.isStorage ? `${entity.rackCount || 0} ชั้นวาง` : 'พื้นที่ทั่วไป'}
+            {/* ของที่วางในห้องโดยตรง — ห้องเล็กที่ไม่มีชั้นวางจะได้ไม่ดูเหมือนห้องว่างบนผัง */}
+            {Number(entity.stagedItems) > 0 && (
+              <span className="font-semibold text-blue-700/80">
+                📦 ในห้อง {Number(entity.stagedItems)} รายการ · {Number(entity.stagedQty || 0)} ชิ้น
+              </span>
+            )}
           </div>
         </div>
       )}
@@ -578,8 +585,9 @@ function UnassignedModal({ onClose, onAssigned }) {
   const [items, setItems] = useState([]);
   const [total, setTotal] = useState(0);
   const [racks, setRacks] = useState([]);
+  const [rooms, setRooms] = useState([]);   // ห้อง/พื้นที่ที่วางของเข้าไปได้เลยโดยไม่ต้องมีชั้นวาง
   const [loading, setLoading] = useState(true);
-  const [draft, setDraft] = useState({});   // sku → { rackId, level }
+  const [draft, setDraft] = useState({});   // sku → { place: 'rack:12' | 'room:3', level, quantity }
   const [saving, setSaving] = useState('');
   useBodyScrollLock(true);
 
@@ -593,20 +601,34 @@ function UnassignedModal({ onClose, onAssigned }) {
 
   useEffect(() => {
     fetchApi('/api/racks').then((result) => { if (result.success) setRacks(result.racks); }).catch(() => {});
+    fetchApi('/api/rooms').then((result) => { if (result.success) setRooms(result.rooms.filter((room) => room.isStorage || room.isStaging)); }).catch(() => {});
   }, []);
   useEffect(() => {
     const timer = setTimeout(() => load(search.trim()), 300);
     return () => clearTimeout(timer);
   }, [search, load]);
 
+  // ที่เก็บที่เลือกไว้ของแถวนั้น — 'rack:12' หรือ 'room:3'
+  // รวมชั้นวางกับห้องไว้ในช่องเดียว เพราะผู้ใช้คิดว่า "จะเก็บไว้ที่ไหน" ไม่ได้คิดแยกว่าที่นั้นเป็นชั้นหรือห้อง
+  const placeOf = (sku) => {
+    const [kind, id] = String(draft[sku]?.place || '').split(':');
+    if (!id) return null;
+    return kind === 'room'
+      ? { kind: 'room', room: rooms.find((entry) => entry.id === Number(id)) || null }
+      : { kind: 'rack', rack: racks.find((entry) => entry.id === Number(id)) || null };
+  };
+
   // ช่องที่ยังไม่ได้กรอกของแถวนั้น — ใช้ทั้งปิดปุ่มบันทึกและบอกว่าขาดอะไร
   // ชั้นวางที่แบ่งเลเวลต้องระบุเลเวลเสมอ ไม่งั้นของจะไปอยู่เป็นตำแหน่งลอยๆ ที่หาไม่เจอหน้าชั้น
+  // ห้องไม่มีเลเวล จึงไม่ต้องกรอกอะไรเพิ่ม (ห้องเล็กที่เก็บของชิ้นใหญ่วางเข้าห้องได้เลย)
   const missingFor = (sku) => {
     const choice = draft[sku] || {};
-    const rack = racks.find((entry) => entry.id === Number(choice.rackId));
+    const place = placeOf(sku);
     const missing = [];
-    if (!choice.rackId) missing.push('ชั้นวาง');
-    else if (!rack?.isFloor && !choice.level) missing.push(`เลเวลของชั้นวาง ${rack?.name || ''}`.trim());
+    if (!place) missing.push('ที่เก็บ');
+    else if (place.kind === 'rack' && !place.rack?.isFloor && !choice.level) {
+      missing.push(`เลเวลของชั้นวาง ${place.rack?.name || ''}`.trim());
+    }
     return missing;
   };
 
@@ -622,14 +644,16 @@ function UnassignedModal({ onClose, onAssigned }) {
         danger: true
       });
     }
+    const place = placeOf(item.sku);
     setSaving(item.sku);
     try {
       const result = await fetchApi('/api/storage-map/assign', {
         method: 'POST',
         body: JSON.stringify({
           sku: item.sku,
-          rackId: Number(choice.rackId),
-          level: choice.level || null,
+          ...(place.kind === 'room'
+            ? { roomId: place.room.id }
+            : { rackId: place.rack.id, level: choice.level || null }),
           quantity: choice.quantity === '' || choice.quantity == null ? null : Number(choice.quantity),
           mode: 'add'
         })
@@ -647,11 +671,9 @@ function UnassignedModal({ onClose, onAssigned }) {
     }
   };
 
-  const rackOf = (sku) => racks.find((rack) => rack.id === Number(draft[sku]?.rackId));
-
   // เลือกที่เก็บไว้แล้วแต่ยังไม่กดบันทึก ปิดหน้าต่างไปเลยของจะไม่ถูกวาง — ถามก่อนกันกดพลาด
   const closeGuarded = async () => {
-    const pending = Object.values(draft).filter((choice) => choice?.rackId || choice?.level || choice?.quantity);
+    const pending = Object.values(draft).filter((choice) => choice?.place || choice?.level || choice?.quantity);
     if (pending.length > 0) {
       const ok = await confirmDialog({
         title: 'ปิดหน้าต่างนี้?',
@@ -694,7 +716,8 @@ function UnassignedModal({ onClose, onAssigned }) {
               {search ? 'ไม่พบสินค้าที่ค้นหา' : '🎉 สินค้าทุกตัวมีตำแหน่งจัดเก็บครบแล้ว'}
             </p>
           ) : items.map((item) => {
-            const rack = rackOf(item.sku);
+            const place = placeOf(item.sku);
+            const rack = place?.kind === 'rack' ? place.rack : null;
             return (
               <div key={item.sku} className="mb-2 flex flex-wrap items-center gap-2 rounded-xl bg-base-200/50 p-2">
                 <div className="avatar shrink-0">
@@ -712,21 +735,32 @@ function UnassignedModal({ onClose, onAssigned }) {
                   </div>
                 </div>
                 <select
-                  className={`select select-bordered select-sm w-36 ${draft[item.sku]?.rackId ? '' : 'select-warning'}`}
-                  value={draft[item.sku]?.rackId || ''}
+                  className={`select select-bordered select-sm w-44 ${draft[item.sku]?.place ? '' : 'select-warning'}`}
+                  value={draft[item.sku]?.place || ''}
                   onChange={(event) => setDraft((current) => {
-                    // ชั้นที่มีเลเวลเดียวเติมให้เลย ไม่มีอะไรให้เลือก
-                    const picked = racks.find((entry) => entry.id === Number(event.target.value));
+                    // ชั้นที่มีเลเวลเดียวเติมให้เลย ไม่มีอะไรให้เลือก · ห้องไม่มีเลเวลอยู่แล้ว
+                    const [kind, id] = String(event.target.value).split(':');
+                    const picked = kind === 'rack' ? racks.find((entry) => entry.id === Number(id)) : null;
                     const autoLevel = picked && !picked.isFloor && Number(picked.levels) === 1 ? '1' : '';
-                    return { ...current, [item.sku]: { ...current[item.sku], rackId: event.target.value, level: autoLevel } };
+                    return { ...current, [item.sku]: { ...current[item.sku], place: event.target.value, level: autoLevel } };
                   })}
                 >
-                  <option value="">— เลือกชั้นวาง —</option>
-                  {racks.map((option) => (
-                    <option key={option.id} value={option.id}>
-                      {option.roomName ? `${option.roomName} · ` : ''}{option.name}
-                    </option>
-                  ))}
+                  <option value="">— เลือกที่เก็บ —</option>
+                  <optgroup label="ชั้นวาง / พื้นที่วางพื้น">
+                    {racks.map((option) => (
+                      <option key={`rack:${option.id}`} value={`rack:${option.id}`}>
+                        {option.roomName ? `${option.roomName} · ` : ''}{option.name}
+                      </option>
+                    ))}
+                  </optgroup>
+                  {/* วางในห้องได้เลย — ห้องเล็กที่เก็บของชิ้นใหญ่ไม่ต้องสร้างชั้นวางขึ้นมาซ้อนอีกชั้น */}
+                  <optgroup label="ในห้องโดยตรง (ไม่ต้องมีชั้นวาง)">
+                    {rooms.map((option) => (
+                      <option key={`room:${option.id}`} value={`room:${option.id}`}>
+                        {option.isStaging ? '📦 ' : '🏠 '}{option.name}
+                      </option>
+                    ))}
+                  </optgroup>
                 </select>
                 <select
                   className={`select select-bordered select-sm w-28 ${rack && !rack.isFloor && !draft[item.sku]?.level ? 'select-warning' : ''}`}
@@ -734,7 +768,7 @@ function UnassignedModal({ onClose, onAssigned }) {
                   disabled={!rack || rack.isFloor}
                   onChange={(event) => setDraft((current) => ({ ...current, [item.sku]: { ...current[item.sku], level: event.target.value } }))}
                 >
-                  <option value="">{rack?.isFloor ? 'วางกับพื้น' : '— เลือกเลเวล —'}</option>
+                  <option value="">{place?.kind === 'room' ? 'ไม่มีเลเวล' : rack?.isFloor ? 'วางกับพื้น' : '— เลือกเลเวล —'}</option>
                   {Array.from({ length: rack?.levels || 0 }, (_, index) => index + 1).map((level) => (
                     <option key={level} value={level}>เลเวล {level}</option>
                   ))}
@@ -781,6 +815,7 @@ export default function Storage() {
   const [markers, setMarkers] = useState([]);
   const [loading, setLoading] = useState(true);
   const [openRackId, setOpenRackId] = useState(null);
+  const [openRoomId, setOpenRoomId] = useState(null);   // ตารางของที่วางในห้องโดยตรง
   const [highlight, setHighlight] = useState({ rackId: null, level: null, sku: null });
 
   // เส้นทางหยิบของตามใบเบิก (เปิดผ่าน /storage?pick=<เลขที่ใบเบิก>)
@@ -1806,6 +1841,8 @@ export default function Storage() {
     setView('room');
     await loadRoom(room.id);
     setHighlight({ rackId: null, level: null, sku });
+    // ของวางในห้องโดยตรง ไม่มีชั้นวางให้เปิดดู — เปิดตารางของในห้องให้เลย ไม่งั้นพามาถึงห้องแล้วก็ไม่เห็นของ
+    if (open) setOpenRoomId(room.id);
     return true;
   }, [gotoRack, loadRoom, planId]);
 
@@ -2215,7 +2252,13 @@ export default function Storage() {
 
           <div className="flex flex-wrap items-center gap-2">
             {inRoom ? (
-              <button className="btn btn-sm btn-ghost" onClick={backToFloor}><FiArrowLeft /> กลับผังคลัง</button>
+              <>
+                <button className="btn btn-sm btn-ghost" onClick={backToFloor}><FiArrowLeft /> กลับผังคลัง</button>
+                {/* ห้องเก็บของใช้เก็บของได้เองโดยไม่ต้องมีชั้นวาง — ปุ่มนี้คือทางเข้าของกลุ่มนั้น */}
+                <button className="btn btn-sm btn-outline btn-primary" onClick={() => setOpenRoomId(currentRoom.id)}>
+                  <FiPackage /> ของที่วางในห้องนี้
+                </button>
+              </>
             ) : (
               <div className="join">
                 <select className="select select-bordered select-sm join-item" value={planId || ''} onChange={(event) => switchPlan(Number(event.target.value))}>
@@ -2549,6 +2592,17 @@ export default function Storage() {
           canEdit={canEdit}
           onChanged={reloadContext}
           onClose={() => setOpenRackId(null)}
+        />
+      )}
+
+      {openRoomId && (
+        <RoomItems
+          roomId={openRoomId}
+          roomName={currentRoom?.id === openRoomId ? currentRoom.name : (rooms.find((room) => room.id === openRoomId)?.name || '')}
+          highlightSku={highlight.rackId == null ? highlight.sku : null}
+          canEdit={canEdit}
+          onChanged={reloadContext}
+          onClose={() => setOpenRoomId(null)}
         />
       )}
 

@@ -15,7 +15,7 @@ import {
   trashComponents,
   ungroupComponents
 } from '../controllers/storageWorkflowController.js';
-import { assignItemLocation, getLocationsOfItem, getPickList, listUnassignedItems, moveItemQuantity } from '../controllers/storageItemController.js';
+import { assignItemLocation, getLocationsOfItem, getPickList, getRoomItems, listUnassignedItems, moveItemQuantity } from '../controllers/storageItemController.js';
 import { authorizeRoles, verifyAuth } from '../middleware/authMiddleware.js';
 
 const router = express.Router();
@@ -47,6 +47,7 @@ router.get('/storage-map/pick-list/:txId', ...manager, getPickList);
 router.get('/storage-map/unassigned', ...manager, listUnassignedItems);
 router.post('/storage-map/assign', ...manager, assignItemLocation);
 router.get('/storage-map/locations/:sku', verifyAuth, getLocationsOfItem);   // ทุก role ดูได้ว่าของอยู่ที่ไหนบ้าง
+router.get('/storage-map/room-items/:id', verifyAuth, getRoomItems);         // ของที่วางในห้องโดยตรง — ดูได้เหมือนเปิดชั้นวาง
 router.post('/storage-map/move-quantity', ...manager, moveItemQuantity);     // ย้ายของบางส่วนข้ามตำแหน่ง
 
 router.get('/floor-plans/:id/layout-meta', verifyAuth, layoutMeta);
