@@ -899,6 +899,8 @@ export default function Storage() {
   const [loading, setLoading] = useState(true);
   const [openRackId, setOpenRackId] = useState(null);
   const [openRoomId, setOpenRoomId] = useState(null);   // ตารางของที่วางในห้องโดยตรง
+  // ยอดของที่วางในห้องที่เปิดอยู่ { items, qty } — ห้องที่ไม่มีชั้นวางใช้บอกกลางผังว่ามีของ ไม่ใช่ห้องว่าง
+  const [roomStock, setRoomStock] = useState(null);
   const [highlight, setHighlight] = useState({ rackId: null, level: null, sku: null });
 
   // เส้นทางหยิบของตามใบเบิก (เปิดผ่าน /storage?pick=<เลขที่ใบเบิก>)
@@ -1004,12 +1006,16 @@ export default function Storage() {
   const loadRoom = useCallback(async (roomId) => {
     setLoading(true);
     setRooms([]);
-    const [rackResult, markerResult] = await Promise.all([
+    const [rackResult, markerResult, roomResult] = await Promise.all([
       fetchApi(`/api/racks?room=${roomId}`).catch(() => ({})),
-      fetchApi(`/api/markers?room=${roomId}`).catch(() => ({}))
+      fetchApi(`/api/markers?room=${roomId}`).catch(() => ({})),
+      // ถามใหม่ทุกรอบ ไม่ใช้ยอดที่ติดมากับห้องตอนกดเข้า — แก้ของในตารางแล้วห้องโหลดใหม่ ตัวเลขต้องตามทัน
+      fetchApi('/api/rooms').catch(() => ({}))
     ]);
     if (rackResult.success) setRacks(rackResult.racks);
     if (markerResult.success) setMarkers(markerResult.markers);
+    const room = roomResult.success && roomResult.rooms.find((entry) => entry.id === roomId);
+    setRoomStock(room ? { items: Number(room.stagedItems || 0), qty: Number(room.stagedQty || 0) } : null);
     setLoading(false);
   }, []);
 
@@ -1031,6 +1037,11 @@ export default function Storage() {
     ...markers.map((entity) => ({ ...entity, kind: 'marker' }))
   ], [view, rooms, racks, markers]);
   const orderedEntities = useMemo(() => normalizeLayerOrder(allEntities), [allEntities]);
+  // ของที่วางในห้องโดยตรง (ไม่อยู่บนชั้นวาง) ไม่มีอะไรบนผังแทนตัวมัน — ต้องบอกเอง ไม่งั้นเข้าห้องมาแล้วมองไม่เห็น
+  //   ห้องไม่มีอะไรบนผังเลย → ข้อความกลางผัง แทนคำว่า "ผังนี้ยังว่าง"
+  //   ห้องมีชั้นวางแล้ว     → แถบเล็กมุมซ้ายบน ไม่บังชั้นวาง
+  const roomLooseStock = inRoom && !loading && Number(roomStock?.qty) > 0 ? roomStock : null;
+  const roomHasStock = Boolean(roomLooseStock) && orderedEntities.length === 0;
   const displayZ = useMemo(() => new Map(orderedEntities.map((entity) => [entityKey(entity), entity.z])), [orderedEntities]);
   const selectedEntity = useMemo(() => orderedEntities.find((entity) => entityKey(entity) === selectedKey) || null, [orderedEntities, selectedKey]);
   const selectedEntities = useMemo(() => orderedEntities.filter((entity) => selectedKeys.includes(entityKey(entity))), [orderedEntities, selectedKeys]);
@@ -2658,7 +2669,7 @@ export default function Storage() {
                 />
               )}
 
-              {!loading && orderedEntities.length === 0 && (
+              {!loading && orderedEntities.length === 0 && !roomHasStock && (
                 <div className="pointer-events-none absolute inset-0 flex flex-col items-center justify-center text-base-content/35">
                   <FiMap className="mb-3 text-5xl" />
                   <p className="font-semibold">ผังนี้ยังว่าง</p>
@@ -2667,6 +2678,31 @@ export default function Storage() {
               )}
               {loading && <div className="absolute inset-0 z-100 flex items-center justify-center bg-base-100/60"><span className="loading loading-spinner loading-lg text-primary" /></div>}
             </div>
+
+            {/* ห้องที่ไม่มีชั้นวางแต่มีของวางในห้อง — เดิมขึ้น "ผังนี้ยังว่าง" ทั้งที่มีของ คนเข้ามาแล้วนึกว่าห้องว่าง
+                วางนอกกรอบที่ถูกซูมเหมือนแถบซูมด้านล่าง ปุ่มจึงขนาดเท่าเดิมทุกระดับซูม · กรอบไม่รับคลิก ยังลากผัง/วาดชั้นวางได้ */}
+            {roomHasStock && (
+              <div className="pointer-events-none absolute inset-0 z-40 flex flex-col items-center justify-center p-4 text-center">
+                <FiPackage className="mb-3 text-5xl text-primary/70" />
+                <p className="font-semibold text-base-content/70">
+                  ห้องนี้ไม่มีชั้นวาง · มีของวางในห้อง {roomLooseStock.items.toLocaleString()} รายการ · {roomLooseStock.qty.toLocaleString()} ชิ้น
+                </p>
+                <button type="button" className="btn btn-sm btn-primary pointer-events-auto mt-3" onClick={() => setOpenRoomId(currentRoom.id)}>
+                  <FiPackage /> ดูของในห้องนี้
+                </button>
+              </div>
+            )}
+            {roomLooseStock && !roomHasStock && (
+              <div className="absolute left-3 top-3 z-40 flex max-w-[calc(100%-1.5rem)] items-center gap-2 rounded-xl border border-base-300 bg-base-100/95 px-3 py-1.5 text-sm shadow-lg backdrop-blur">
+                <FiPackage className="shrink-0 text-primary" />
+                <span className="min-w-0">
+                  มีของวางในห้องนี้ที่ไม่ได้อยู่บนชั้นวาง {roomLooseStock.items.toLocaleString()} รายการ · {roomLooseStock.qty.toLocaleString()} ชิ้น
+                </span>
+                <button type="button" className="btn btn-xs btn-primary shrink-0" onClick={() => setOpenRoomId(currentRoom.id)}>
+                  ดูของในห้องนี้
+                </button>
+              </div>
+            )}
 
             {/* แผงเส้นทางหยิบของ — ต้องอยู่นอก div ที่ถูก transform ไม่งั้นจะถูกซูม/เลื่อนตามผัง */}
             {pickList && (
