@@ -4,6 +4,7 @@ import toast from 'react-hot-toast';
 import { fetchApi, getAssetUrl } from '../../utils/api';
 import { confirmDialog } from '../../utils/confirm';
 import { useBodyScrollLock } from '../../utils/useBodyScrollLock';
+import { SEARCH_HIGHLIGHT_BOX, SEARCH_HIGHLIGHT_ROW, SEARCH_HIGHLIGHT_STICKY_CELL } from '../../utils/highlight';
 import AdjustStockModal from '../AdjustStock';
 
 const NO_IMAGE = "data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSIxMDAiIGhlaWdodD0iMTAwIj48cmVjdCB3aWR0aD0iMTAwJSIgaGVpZ2h0PSIxMDAlIiBmaWxsPSIjZjNmNGY2Ii8+PHRleHQgeD0iNTAlIiB5PSI1MCUiIGZvbnQtc2l6ZT0iMTIiIHRleHQtYW5jaG9yPSJtaWRkbGUiIGFsaWdubWVudC1iYXNlbGluZT0ibWlkZGxlIiBmb250LWZhbWlseT0ic2Fucy1zZXJpZiIgZmlsbD0iIzliOWI5YiI+Tm8gSW1hZ2U8L3RleHQ+PC9zdmc+";
@@ -24,7 +25,7 @@ const LevelRow = React.memo(function LevelRow({
   item, canEdit, saving, selected, highlighted, removeTitle, onToggle, onMove, onSetQty, onRemove, onPreview
 }) {
   return (
-    <tr className={`${highlighted ? 'bg-warning/10' : 'hover:bg-base-200/40'} ${selected ? 'bg-primary/5' : ''}`}>
+    <tr className={`${highlighted ? SEARCH_HIGHLIGHT_ROW : 'hover:bg-base-200/40'} ${selected ? 'bg-primary/5' : ''}`}>
       {canEdit && (
         <td>
           <input
@@ -65,7 +66,7 @@ const LevelRow = React.memo(function LevelRow({
       </td>
       <td className="opacity-60">{item.stock}</td>
       {canEdit && (
-        <td className="sticky right-0 whitespace-nowrap bg-base-100">
+        <td className={`sticky right-0 whitespace-nowrap ${highlighted ? SEARCH_HIGHLIGHT_STICKY_CELL : 'bg-base-100'}`}>
           {Number(item.qtyHere) > 0 && (
             <button
               className="btn btn-ghost btn-xs text-warning"
@@ -531,7 +532,7 @@ export default function RackBlueprint({ rackId, highlightLevel, highlightSku, ca
                   key={level}
                   type="button"
                   onClick={() => openLevel(level)}
-                  className={`w-full rounded-xl border p-4 text-left transition-colors hover:bg-base-200/70 ${highlighted ? 'border-warning bg-warning/10 ring-2 ring-warning/40' : 'border-base-300 bg-base-200/40'}`}
+                  className={`w-full rounded-xl border p-4 text-left transition-colors hover:bg-base-200/70 ${highlighted ? SEARCH_HIGHLIGHT_BOX : 'border-base-300 bg-base-200/40'}`}
                 >
                   <div className="mb-2 flex items-center gap-2 text-sm font-bold">
                     เลเวล {level}
@@ -560,7 +561,7 @@ export default function RackBlueprint({ rackId, highlightLevel, highlightSku, ca
                 <button
                   type="button"
                   onClick={() => openLevel(NO_LEVEL)}
-                  className={`w-full rounded-xl border border-dashed p-4 text-left transition-colors hover:bg-base-200/70 ${highlighted ? 'border-warning bg-warning/10 ring-2 ring-warning/40' : 'border-base-300'}`}
+                  className={`w-full rounded-xl border border-dashed p-4 text-left transition-colors hover:bg-base-200/70 ${highlighted ? SEARCH_HIGHLIGHT_BOX : 'border-base-300'}`}
                 >
                   <div className="mb-2 flex items-center gap-2 text-sm font-bold text-base-content/60">
                     ยังไม่ระบุเลเวล

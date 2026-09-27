@@ -4,6 +4,7 @@ import toast from 'react-hot-toast';
 import { fetchApi, getAssetUrl } from '../../utils/api';
 import { confirmDialog } from '../../utils/confirm';
 import { useBodyScrollLock } from '../../utils/useBodyScrollLock';
+import { SEARCH_HIGHLIGHT_ROW, SEARCH_HIGHLIGHT_STICKY_CELL } from '../../utils/highlight';
 import AdjustStockModal from '../AdjustStock';
 
 const NO_IMAGE = "data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSIxMDAiIGhlaWdodD0iMTAwIj48cmVjdCB3aWR0aD0iMTAwJSIgaGVpZ2h0PSIxMDAlIiBmaWxsPSIjZjNmNGY2Ii8+PHRleHQgeD0iNTAlIiB5PSI1MCUiIGZvbnQtc2l6ZT0iMTIiIHRleHQtYW5jaG9yPSJtaWRkbGUiIGFsaWdubWVudC1iYXNlbGluZT0ibWlkZGxlIiBmb250LWZhbWlseT0ic2Fucy1zZXJpZiIgZmlsbD0iIzliOWI5YiI+Tm8gSW1hZ2U8L3RleHQ+PC9zdmc+";
@@ -271,7 +272,7 @@ export default function RoomItems({ roomId, roomName = '', highlightSku = null, 
               </thead>
               <tbody>
                 {items.map((item) => (
-                  <tr key={item.sku} className={highlightSku === item.sku ? 'bg-warning/10' : 'hover:bg-base-200/40'}>
+                  <tr key={item.sku} className={highlightSku === item.sku ? SEARCH_HIGHLIGHT_ROW : 'hover:bg-base-200/40'}>
                     <td>
                       <div className="avatar">
                         <div className="h-10 w-10 rounded bg-base-300">
@@ -301,7 +302,7 @@ export default function RoomItems({ roomId, roomName = '', highlightSku = null, 
                     </td>
                     <td className="opacity-60">{item.stock}</td>
                     {canEdit && (
-                      <td className="sticky right-0 whitespace-nowrap bg-base-100">
+                      <td className={`sticky right-0 whitespace-nowrap ${highlightSku === item.sku ? SEARCH_HIGHLIGHT_STICKY_CELL : 'bg-base-100'}`}>
                         {Number(item.qtyHere) > 0 && (
                           <button className="btn btn-ghost btn-xs text-warning" disabled={saving}
                             title="ย้ายไปชั้นวาง ห้องอื่น หรือพื้นที่จัดเตรียม" onClick={() => openMove(item)}>

@@ -47,6 +47,7 @@ import RackBlueprint from './RackBlueprint';
 import RoomItems from './RoomItems';
 import { locationRowLabel } from '../LocationPicker';
 import { needsLocationMenu } from '../../utils/labels';
+import { SEARCH_HIGHLIGHT_BOX } from '../../utils/highlight';
 import BarcodeScanner from '../BarcodeScanner';
 import { isCameraScanDevice } from '../../utils/device';
 import { parseScannedCode } from '../../utils/qr';
@@ -768,7 +769,7 @@ function UnassignedModal({ onClose, onAssigned, focusSku = null }) {
               <div
                 key={item.sku}
                 data-sku={item.sku}
-                className={`mb-2 flex flex-wrap items-center gap-2 rounded-xl border p-2 ${focused ? 'border-warning bg-warning/10 ring-2 ring-warning/40' : 'border-transparent bg-base-200/50'}`}
+                className={`mb-2 flex flex-wrap items-center gap-2 rounded-xl border p-2 ${focused ? SEARCH_HIGHLIGHT_BOX : 'border-transparent bg-base-200/50'}`}
               >
                 <div className="avatar shrink-0">
                   <div className="h-10 w-10 rounded bg-base-300">
